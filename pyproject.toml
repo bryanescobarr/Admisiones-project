@@ -15,6 +15,7 @@ dependencies = [
     "scikit-learn>=1.9.0",
     "scipy>=1.18.0",
     "shap>=0.52.0",
+    "streamlit>=1.62.0",
 ]
 
 [project.urls]
