@@ -16,6 +16,56 @@ Using the data science project template <https://github.com/JoseRZapata/data-sci
 - `Python` = `3.12`
 - `devcontainer` to work in `VSCode` or [GitHub Codespaces](https://github.com/features/codespaces) using the same environment as in production.
 
+## 🎓 Demo: predicción de admisión a posgrado
+
+Formulario web donde un aspirante introduce su perfil académico y obtiene su probabilidad
+estimada de admisión, junto con la clasificación de esa universidad como opción **segura**,
+**probable** o **ambiciosa**.
+
+![Streamlit](https://img.shields.io/badge/demo-streamlit-FF4B4B?logo=streamlit&logoColor=white)
+
+### Ejecutar en local
+
+```bash
+uv sync --all-extras --dev
+uv run streamlit run app.py
+```
+
+Se abre en <http://localhost:8501>. No hace falta ejecutar ningún notebook antes: el modelo
+entrenado ya está versionado en `data/06_models/modelo_final_automl.joblib`.
+
+Para verificar que todo funciona sin abrir el navegador:
+
+```bash
+uv run pytest tests/test_app.py tests/test_prediccion.py -v
+```
+
+### Publicar en Streamlit Community Cloud
+
+1. Entrar en <https://share.streamlit.io> con la cuenta de GitHub.
+2. **Create app** → **Deploy a public app from GitHub**.
+3. Repository `bryanescobarr/Admisiones-project`, branch `main`, main file path `app.py`,
+   y en *Advanced settings* elegir **Python 3.12**.
+4. **Deploy**.
+
+El repositorio ya trae lo que necesita el despliegue: `requirements.txt` con las versiones
+**fijadas** (el `.joblib` se serializó con `scikit-learn 1.9.0` y `pandas 3.0.5`, y otras
+versiones pueden no deserializarlo) y `packages.txt` con `libgomp1`, la librería de OpenMP
+que necesita scikit-learn.
+
+### Cómo está construida
+
+| Archivo | Qué hace |
+|---|---|
+| `app.py` | interfaz: formulario, resultados, gráfico de aportes, advertencias |
+| `src/inference/prediccion.py` | lógica: cargar el modelo, predecir, clasificar en cestas, explicar con SHAP |
+| `notebooks/7-deploy/08.Demo-de-la-aplicacion-BER-2026-08-21.ipynb` | documentación de la demo y del despliegue |
+
+La lógica vive fuera de la interfaz para poder probarla: una interfaz rota se ve, una regla
+de negocio mal escrita no. La demo admite campos vacíos (el pipeline imputa), muestra un
+rango de referencia junto a la cifra y **avisa explícitamente** cuando la predicción cae en
+el tramo donde el modelo tiende a ser optimista.
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
