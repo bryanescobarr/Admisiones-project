@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 readme = "README.md"
 
 dependencies = [
+    "flaml[automl]>=2.6.0",
     "pandas[parquet]>=3.0.5",
     "pyarrow>=25.0.1",
     "scikit-learn>=1.9.0",
