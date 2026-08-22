@@ -9,6 +9,8 @@
 [![security: bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://github.com/PyCQA/bandit)
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 
+**Demo en línea del modelo: <https://admisiones-project-cd.streamlit.app/>**
+
 This is a data science project template created with [Cookiecutter] to help you start your next data science or machine learning project quickly and efficiently. It includes a well-organized folder structure, essential tools for code quality, testing, and documentation, and follows best practices in the industry.
 
 Using the data science project template <https://github.com/JoseRZapata/data-science-project-template>
@@ -18,11 +20,13 @@ Using the data science project template <https://github.com/JoseRZapata/data-sci
 
 ## 🎓 Demo: predicción de admisión a posgrado
 
+**🔗 Demo en línea: <https://admisiones-project-cd.streamlit.app/>**
+
+[![Abrir la demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://admisiones-project-cd.streamlit.app/)
+
 Formulario web donde un aspirante introduce su perfil académico y obtiene su probabilidad
 estimada de admisión, junto con la clasificación de esa universidad como opción **segura**,
-**probable** o **ambiciosa**.
-
-![Streamlit](https://img.shields.io/badge/demo-streamlit-FF4B4B?logo=streamlit&logoColor=white)
+**probable** o **ambiciosa**, y el desglose de cuánto aportó cada dato de su perfil.
 
 ### Ejecutar en local
 
