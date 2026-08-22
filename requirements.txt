@@ -1,0 +1,11 @@
+# Dependencias de la demo de Streamlit.
+# Las versiones estan fijadas a proposito: el modelo se serializo con estas, y una version
+# distinta de scikit-learn o pandas puede no poder deserializarlo.
+streamlit==1.62.0
+scikit-learn==1.9.0
+pandas==3.0.5
+numpy==2.5.2
+pyarrow==25.0.1
+joblib==1.5.3
+shap==0.52.0
+matplotlib==3.11.1
