@@ -349,9 +349,7 @@ def revisar(datos: pd.DataFrame, esquema: EsquemaDatos) -> list[Violacion]:
             continue
         serie = datos[nombre]
         violaciones.extend(validar_tipo(serie, nombre, regla))
-        violaciones.extend(
-            validar_nulos(serie, nombre, regla, esquema.min_filas_para_proporcion)
-        )
+        violaciones.extend(validar_nulos(serie, nombre, regla, esquema.min_filas_para_proporcion))
         violaciones.extend(validar_rango(serie, nombre, regla))
         violaciones.extend(validar_categorias(serie, nombre, regla))
         violaciones.extend(validar_formato_fecha(serie, nombre, regla))

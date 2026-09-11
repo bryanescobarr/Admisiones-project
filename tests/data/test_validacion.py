@@ -13,6 +13,12 @@ from data.validacion import (
     validar,
 )
 
+# constantes de las comparaciones, para no repetir numeros sueltos en los asserts
+NULOS_ESPERADOS = 10
+FILAS_DE_MUESTRA_PEQUENA = 3
+VIOLACIONES_ESPERADAS = 2
+TOLERANCIA = 1e-9
+
 ESQUEMA_MINIMO = EsquemaDatos(
     columnas={
         "puntaje": ReglaColumna(tipos=("float64",), rango=(0, 10), max_nulos=0.5),
@@ -114,7 +120,7 @@ def test_detecta_el_exceso_de_nulos_en_un_conjunto_grande() -> None:
     violaciones = revisar(pd.DataFrame({"puntaje": valores}), esquema)
 
     assert violaciones[0].regla == "exceso_de_nulos"
-    assert violaciones[0].filas_afectadas == 10
+    assert violaciones[0].filas_afectadas == NULOS_ESPERADOS
 
 
 def test_el_umbral_relativo_no_se_aplica_a_muestras_pequenas() -> None:
@@ -122,7 +128,7 @@ def test_el_umbral_relativo_no_se_aplica_a_muestras_pequenas() -> None:
     esquema = EsquemaDatos(columnas={"puntaje": ReglaColumna(max_nulos=0.10)})
 
     assert revisar(pd.DataFrame({"puntaje": [None, 1.0, 2.0]}), esquema) == []
-    assert MIN_FILAS_PARA_PROPORCION > 3
+    assert MIN_FILAS_PARA_PROPORCION > FILAS_DE_MUESTRA_PEQUENA
 
 
 def test_un_maximo_de_cero_nulos_se_exige_siempre() -> None:
@@ -186,7 +192,9 @@ RELACION_SUMA = ReglaRelacion(
     nombre="total_coherente",
     descripcion="total debe ser la suma de parte_a y parte_b",
     columnas=("parte_a", "parte_b", "total"),
-    condicion=lambda datos: (datos["parte_a"] + datos["parte_b"] - datos["total"]).abs() < 1e-9,
+    condicion=lambda datos: (
+        (datos["parte_a"] + datos["parte_b"] - datos["total"]).abs() < TOLERANCIA
+    ),
 )
 ESQUEMA_RELACION = EsquemaDatos(
     columnas={
@@ -232,7 +240,7 @@ def test_el_informe_recoge_todas_las_violaciones_a_la_vez() -> None:
     with pytest.raises(ErrorValidacion) as error:
         validar(datos, ESQUEMA_MINIMO, contexto="las pruebas")
 
-    assert len(error.value.violaciones) == 2
+    assert len(error.value.violaciones) == VIOLACIONES_ESPERADAS
     mensaje = str(error.value)
     assert "las pruebas" in mensaje
     assert "fuera_de_rango" in mensaje
