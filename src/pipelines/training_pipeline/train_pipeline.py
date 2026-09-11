@@ -8,6 +8,11 @@ con sus métricas.
         -> data/06_models/modelo_training_pipeline.joblib
         -> data/08_reporting/metricas_training_pipeline.parquet
 
+**La partición se comprueba antes de entrenar.** Entre partir y ajustar hay una puerta:
+`chequear_particion` verifica que ningún perfil de prueba estuvo en entrenamiento y que los
+dos conjuntos representan la misma distribución (`src/data/particion.py`). Una fuga detiene
+el pipeline sin dejar artefactos; la deriva se avisa y se registra en el informe.
+
 **El orden protege contra la fuga de datos.** La partición ocurre antes que cualquier
 ajuste, y la imputación y el escalado viven dentro del `Pipeline`, así que sus parámetros
 —la mediana, la media, la desviación— se aprenden **solo con el conjunto de
@@ -59,6 +64,7 @@ _SRC = Path(__file__).resolve().parents[2]
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from data.particion import Particion, validar_particion_train_test  # noqa: E402
 from data.preprocesamiento import construir_preprocesamiento  # noqa: E402
 from data.validacion import ErrorValidacion  # noqa: E402
 from model.heuristica import HeuristicaAdmision  # noqa: E402
@@ -82,6 +88,7 @@ FAMILIAS_AUTOML = ["lgbm", "xgboost", "rf", "extra_tree", "xgb_limitdepth"]
 RUTA_FEATURES_RELATIVA = Path("data") / "04_feature" / "admisiones_features.parquet"
 RUTA_MODELO_RELATIVA = Path("data") / "06_models" / "modelo_training_pipeline.joblib"
 RUTA_METRICAS_RELATIVA = Path("data") / "08_reporting" / "metricas_training_pipeline.parquet"
+RUTA_CHEQUEOS_RELATIVA = Path("data") / "08_reporting" / "chequeos_particion.parquet"
 
 # referencias que se miden en cada ejecucion junto al modelo elegido
 MODELO_DE_REFERENCIA = "dummy"
@@ -148,11 +155,12 @@ CATALOGO_MODELOS: dict[str, dict[str, Any]] = {
 
 @dataclass(frozen=True)
 class RutasEntrenamiento:
-    """Las tres rutas que definen la entrada y las salidas de esta etapa."""
+    """Las rutas que definen la entrada y las salidas de esta etapa."""
 
     features: Path
     modelo: Path
     metricas: Path
+    chequeos: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +171,7 @@ class ResultadoEntrenamiento:
     metricas: pd.DataFrame
     ruta_modelo: Path
     ruta_metricas: Path
+    chequeos_particion: pd.DataFrame | None = None
 
 
 def leer_features(ruta: Path) -> pd.DataFrame:
@@ -186,7 +195,7 @@ def separar_train_test(
     features: pd.DataFrame,
     proporcion_test: float = PROPORCION_TEST,
     semilla: int = SEMILLA,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+) -> Particion:
     """Parte en entrenamiento y prueba **antes** de ajustar nada.
 
     Con 471 filas y un objetivo continuo sin cola pesada no hace falta estratificar: en
@@ -205,7 +214,7 @@ def separar_train_test(
         y_train.mean(),
         y_test.mean(),
     )
-    return X_train, X_test, y_train, y_test
+    return Particion(X_train, X_test, y_train, y_test)
 
 
 def construir_modelo(nombre: str, semilla: int = SEMILLA, **parametros: Any) -> Pipeline:
@@ -290,6 +299,39 @@ def validar_en_entrenamiento(
     }
 
 
+def chequear_particion(
+    particion: Particion,
+    *,
+    proporcion_test: float = PROPORCION_TEST,
+    estricto: bool = False,
+    semilla: int = SEMILLA,
+) -> pd.DataFrame:
+    """Comprueba la partición antes de entrenar y registra el resultado de cada chequeo.
+
+    Entrenar sobre una partición con fuga de información es peor que no entrenar: produce
+    métricas excelentes en las que alguien va a confiar. Por eso el chequeo ocurre **antes**
+    del `fit` y una fuga detiene el pipeline sin dejar artefactos.
+
+    La deriva, en cambio, se avisa y se registra: con 471 filas una partición aleatoria
+    produce diferencias por azar, y bloquear el entrenamiento por eso sería ruido. Con
+    `estricto=True`, cualquier advertencia detiene también el proceso.
+    """
+    informe = validar_particion_train_test(
+        particion,
+        proporcion_esperada=proporcion_test,
+        estricto=estricto,
+        semilla=semilla,
+    )
+    conteo = informe["severidad"].value_counts().to_dict()
+    logger.info(
+        "Chequeos de la particion: %d ejecutados, %d ok, %d advertencias",
+        len(informe),
+        conteo.get("ok", 0),
+        conteo.get("advertencia", 0),
+    )
+    return informe
+
+
 def construir_informe(evaluaciones: list[dict[str, Any]]) -> pd.DataFrame:
     """Tabla de métricas ordenada por MAE, con la mejora frente a la referencia trivial."""
     informe = pd.DataFrame(evaluaciones)
@@ -314,26 +356,54 @@ def guardar_modelo(modelo: Pipeline, ruta: Path, X_prueba: pd.DataFrame) -> Path
     return ruta
 
 
-def guardar_metricas(metricas: pd.DataFrame, ruta: Path) -> Path:
-    """Escribe la tabla de métricas en parquet, junto al resto de reportes del proyecto."""
+def _guardar_tabla(tabla: pd.DataFrame, ruta: Path, etiqueta: str) -> Path:
+    """Escribe una tabla de resultados en parquet, junto al resto de reportes."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    metricas.to_parquet(ruta, index=False, engine="pyarrow", compression="snappy")
-    logger.info("Metricas guardadas en %s", ruta)
+    tabla.to_parquet(ruta, index=False, engine="pyarrow", compression="snappy")
+    logger.info("%s guardadas en %s", etiqueta, ruta)
     return ruta
 
 
-def ejecutar_pipeline(
+def guardar_metricas(metricas: pd.DataFrame, ruta: Path) -> Path:
+    """Escribe la tabla de métricas en parquet, junto al resto de reportes del proyecto."""
+    return _guardar_tabla(metricas, ruta, "Metricas")
+
+
+def guardar_chequeos(chequeos: pd.DataFrame, ruta: Path) -> Path:
+    """Escribe el informe de los chequeos de la partición.
+
+    Se guarda siempre, también cuando todo pasa: el issue pide **los resultados** de las
+    validaciones, y un informe que solo aparece cuando algo falla no deja constancia de lo
+    que sí se comprobó en la ejecución que produjo el modelo.
+    """
+    return _guardar_tabla(chequeos, ruta, "Chequeos de la particion")
+
+
+def ejecutar_pipeline(  # noqa: PLR0913
+    # cada parametro es una opcion de la linea de comandos: agruparlos en un objeto solo
+    # moveria la lista de sitio y alejaria la firma de la interfaz que ve quien lo ejecuta
     rutas: RutasEntrenamiento,
     *,
     nombre_modelo: str = "extra_trees",
     semilla: int = SEMILLA,
     con_referencias: bool = True,
     proporcion_test: float = PROPORCION_TEST,
+    particion_estricta: bool = False,
     **parametros_modelo: Any,
 ) -> ResultadoEntrenamiento:
     """Ejecuta el entrenamiento completo y devuelve el modelo con sus métricas."""
     features = leer_features(rutas.features)
-    X_train, X_test, y_train, y_test = separar_train_test(features, proporcion_test, semilla)
+    particion = separar_train_test(features, proporcion_test, semilla)
+    X_train, X_test = particion.X_train, particion.X_test
+    y_train, y_test = particion.y_train, particion.y_test
+    chequeos = chequear_particion(
+        particion,
+        proporcion_test=proporcion_test,
+        estricto=particion_estricta,
+        semilla=semilla,
+    )
+    if rutas.chequeos is not None:
+        guardar_chequeos(chequeos, rutas.chequeos)
 
     modelo = entrenar(
         construir_modelo(nombre_modelo, semilla, **parametros_modelo), X_train, y_train
@@ -360,7 +430,7 @@ def ejecutar_pipeline(
     metricas = construir_informe(evaluaciones)
     guardar_modelo(modelo, rutas.modelo, X_test)
     guardar_metricas(metricas, rutas.metricas)
-    return ResultadoEntrenamiento(modelo, metricas, rutas.modelo, rutas.metricas)
+    return ResultadoEntrenamiento(modelo, metricas, rutas.modelo, rutas.metricas, chequeos)
 
 
 def _parsear_argumentos(argumentos: list[str] | None = None) -> argparse.Namespace:
@@ -392,6 +462,17 @@ def _parsear_argumentos(argumentos: list[str] | None = None) -> argparse.Namespa
         type=Path,
         default=raiz / RUTA_METRICAS_RELATIVA,
         help="Ruta de la tabla de metricas (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--chequeos-particion",
+        type=Path,
+        default=raiz / RUTA_CHEQUEOS_RELATIVA,
+        help="Ruta del informe de chequeos de la particion (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--particion-estricta",
+        action="store_true",
+        help="Detiene el entrenamiento tambien ante una advertencia de deriva",
     )
     parser.add_argument(
         "--proporcion-test",
@@ -426,11 +507,17 @@ def main(argumentos: list[str] | None = None) -> int:
     parametros = {"presupuesto": opciones.presupuesto} if opciones.modelo == "automl" else {}
     try:
         resultado = ejecutar_pipeline(
-            RutasEntrenamiento(opciones.features, opciones.modelo_salida, opciones.metricas),
+            RutasEntrenamiento(
+                opciones.features,
+                opciones.modelo_salida,
+                opciones.metricas,
+                opciones.chequeos_particion,
+            ),
             nombre_modelo=opciones.modelo,
             proporcion_test=opciones.proporcion_test,
             semilla=opciones.semilla,
             con_referencias=not opciones.sin_referencias,
+            particion_estricta=opciones.particion_estricta,
             **parametros,
         )
     except (ErrorValidacion, FileNotFoundError) as error:
