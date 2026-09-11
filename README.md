@@ -124,6 +124,52 @@ ERROR Validacion fallida en la fuente tipada: 2 regla(s) incumplida(s)
 ERROR No se persistieron features: data/04_feature/admisiones_features.parquet no se ha modificado
 ```
 
+## 🏋️ Training pipeline
+
+Segunda etapa FTI: lee las features del paso anterior, parte train/test, entrena, evalúa y
+guarda el modelo con sus métricas.
+
+```bash
+uv run python src/pipelines/training_pipeline/train_pipeline.py
+```
+
+```text
+data/04_feature/admisiones_features.parquet
+  -> data/06_models/modelo_training_pipeline.joblib
+  -> data/08_reporting/metricas_training_pipeline.parquet
+```
+
+| Opción | Para qué sirve |
+|---|---|
+| `--modelo` | `dummy`, `heuristica`, `ridge`, `extra_trees` (por defecto) o `automl` |
+| `--presupuesto` | segundos de búsqueda, solo con `--modelo automl` |
+| `--proporcion-test` / `--semilla` | partición (0.25 y 42, como en los notebooks) |
+| `--sin-referencias` | mide solo el modelo elegido, sin el dummy ni la heurística |
+| `--features` / `--modelo-salida` / `--metricas` | rutas de entrada y salida |
+
+Salida de una ejecución sobre los datos del repositorio:
+
+```text
+     modelo    MAE   RMSE      R2   MAPE  spearman  MAE_cv  MAE_entrenamiento  brecha_train_cv  mejora_vs_dummy_%
+extra_trees 0.0467 0.0659  0.7977 0.0734    0.8930  0.0431                0.0           0.0431            60.8181
+ heuristica 0.0643 0.0845  0.6667 0.1037    0.8292     NaN                NaN              NaN            46.0545
+      dummy 0.1191 0.1465 -0.0017 0.1799       NaN     NaN                NaN              NaN             0.0000
+```
+
+Tres detalles que no son decorativos:
+
+- **La partición ocurre antes de ajustar nada** y el preprocesamiento vive dentro del
+  `Pipeline`, así que la mediana de imputación y la media del escalado se aprenden solo con
+  *train*. Por eso el feature pipeline deja esos pasos sin hacer.
+- **Cada ejecución mide también las referencias** (`dummy` y `heuristica`): un MAE de 0.047
+  no significa nada solo; comparado con 0.119 y 0.064, sí.
+- **El artefacto se guarda aparte** del modelo que sirve la demo
+  (`modelo_final_automl.joblib`): entrenar no debe cambiar lo que ven los usuarios sin que
+  alguien lo decida.
+
+La receta de preprocesamiento está en `src/data/preprocesamiento.py`, y una prueba
+comprueba que reproduce exactamente el pipeline ajustado en el notebook `4-feat_eng`.
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
@@ -235,6 +281,7 @@ uv add --group dev plotly
 │   ├── tmp_mock.py                     # example python file
 │   ├── data                            # data extraction, validation, processing, transformation
 │   │   ├── transformaciones.py         # transformaciones reutilizadas por los pipelines
+│   │   ├── preprocesamiento.py         # pipeline de sklearn: imputacion, encoding y escalado
 │   │   └── validacion.py               # motor de validacion: esquemas, reglas e informes
 │   ├── model                           # model training, evaluation, validation, export
 │   ├── inference                       # model prediction, serving, monitoring
@@ -242,6 +289,7 @@ uv add --group dev plotly
 │       ├── feature_pipeline            # transforms raw data into features and labels
 │       │   └── feature_pipeline.py     # raw csv -> data/04_feature/admisiones_features.parquet
 │       ├── training_pipeline           # transforms features and labels into a model
+│       │   └── train_pipeline.py       # features -> modelo entrenado + metricas
 │       └── inference_pipeline          # takes features and a trained model for predictions
 ├── tests                               # test code for your project
 │   ├── test_mock.py                    # example test file
