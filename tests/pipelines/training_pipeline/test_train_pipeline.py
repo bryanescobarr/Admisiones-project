@@ -7,8 +7,14 @@ import pytest
 
 from data.particion import Particion
 from data.validacion import ErrorValidacion
+from model.validacion import ConfiguracionValidacion
 from pipelines.feature_pipeline.feature_pipeline import TARGET
 from pipelines.training_pipeline.train_pipeline import (
+    ARCHIVO_CURVA,
+    ARCHIVO_DIAGNOSTICO,
+    ARCHIVO_GRAFICO_CURVA,
+    ARCHIVO_SEGMENTOS,
+    ARCHIVO_VALIDACION,
     CATALOGO_MODELOS,
     RutasEntrenamiento,
     chequear_particion,
@@ -21,8 +27,9 @@ from pipelines.training_pipeline.train_pipeline import (
     guardar_modelo,
     leer_features,
     main,
+    resumen_de_validacion,
     separar_train_test,
-    validar_en_entrenamiento,
+    validar_modelo,
 )
 
 FILAS = 80
@@ -30,6 +37,11 @@ PROPORCION_TEST = 0.25
 SEMILLA = 0
 TOLERANCIA = 1e-9
 CORRELACION_MINIMA = 0.5
+
+
+def _configuracion_rapida() -> ConfiguracionValidacion:
+    """Validación cruzada pequeña: las pruebas comprueban el flujo, no la cifra."""
+    return ConfiguracionValidacion("kfold", pliegues=3, repeticiones=1, semilla=SEMILLA)
 
 
 def _features(filas: int = FILAS) -> pd.DataFrame:
@@ -196,18 +208,52 @@ def test_el_modelo_entrenado_supera_a_la_referencia_trivial() -> None:
     )
 
 
-def test_validar_en_entrenamiento_mide_la_brecha_de_sobreajuste() -> None:
-    """La diferencia entre entrenamiento y validación es el diagnóstico, no el adorno."""
-    X_train, _, y_train, _ = separar_train_test(_features(), PROPORCION_TEST, SEMILLA)
-    modelo = construir_modelo("ridge", SEMILLA)
+def test_validar_modelo_compara_entrenamiento_validacion_y_prueba() -> None:
+    """La tabla que pide el entregable: las mismas métricas en los tres escenarios."""
+    particion = separar_train_test(_features(), PROPORCION_TEST, SEMILLA)
+    modelo = entrenar(construir_modelo("ridge", SEMILLA), particion.X_train, particion.y_train)
+    metricas_prueba = evaluar(modelo, particion.X_test, particion.y_test, "ridge")
 
-    diagnostico = validar_en_entrenamiento(modelo, X_train, y_train, SEMILLA, pliegues=3)
-
-    assert set(diagnostico) == {"MAE_cv", "MAE_cv_desv", "MAE_entrenamiento", "brecha_train_cv"}
-    assert diagnostico["MAE_cv"] > 0
-    assert diagnostico["brecha_train_cv"] == pytest.approx(
-        diagnostico["MAE_cv"] - diagnostico["MAE_entrenamiento"], abs=TOLERANCIA
+    comparacion, diagnostico = validar_modelo(
+        construir_modelo("ridge", SEMILLA),
+        particion,
+        {clave: valor for clave, valor in metricas_prueba.items() if clave != "modelo"},
+        _configuracion_rapida(),
     )
+
+    assert {"entrenamiento", "validacion_cruzada", "prueba"} <= set(comparacion.columns)
+    assert "MAE" in comparacion["metrica"].tolist()
+    assert diagnostico["aspecto"].tolist() == [
+        "sobreajuste",
+        "subajuste",
+        "estabilidad",
+        "degradacion_cv_prueba",
+    ]
+
+
+def test_resumen_de_validacion_alimenta_la_tabla_de_metricas() -> None:
+    """Las cifras de la validación cruzada acompañan al modelo en el informe de métricas."""
+    particion = separar_train_test(_features(), PROPORCION_TEST, SEMILLA)
+    modelo = entrenar(construir_modelo("ridge", SEMILLA), particion.X_train, particion.y_train)
+    comparacion, _ = validar_modelo(
+        construir_modelo("ridge", SEMILLA),
+        particion,
+        {"MAE": float(evaluar(modelo, particion.X_test, particion.y_test, "ridge")["MAE"])},
+        _configuracion_rapida(),
+    )
+
+    resumen = resumen_de_validacion(comparacion)
+
+    assert set(resumen) == {"MAE_cv", "MAE_cv_desv", "MAE_entrenamiento", "brecha_train_cv"}
+    assert resumen["MAE_cv"] > 0
+    assert resumen["brecha_train_cv"] == pytest.approx(
+        resumen["MAE_cv"] - resumen["MAE_entrenamiento"], abs=TOLERANCIA
+    )
+
+
+def test_resumen_de_validacion_tolera_una_comparacion_sin_mae() -> None:
+    """Si un día se cambian las métricas, el informe no debe romperse por el resumen."""
+    assert resumen_de_validacion(pd.DataFrame({"metrica": ["R2"]})) == {}
 
 
 def test_el_informe_ordena_por_error_y_calcula_la_mejora() -> None:
@@ -260,6 +306,8 @@ def test_ejecutar_pipeline_entrena_evalua_y_guarda(parquet_features: Path, tmp_p
         RutasEntrenamiento(parquet_features, ruta_modelo, ruta_metricas),
         nombre_modelo="ridge",
         semilla=SEMILLA,
+        configuracion_validacion=_configuracion_rapida(),
+        con_curva=False,
     )
 
     assert ruta_modelo.exists()
@@ -279,6 +327,8 @@ def test_ejecutar_pipeline_puede_medir_solo_el_modelo_elegido(
         nombre_modelo="ridge",
         semilla=SEMILLA,
         con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+        con_curva=False,
     )
 
     assert len(resultado.metricas) == 1
@@ -376,6 +426,8 @@ def test_ejecutar_pipeline_guarda_el_informe_de_los_chequeos(
         nombre_modelo="ridge",
         semilla=SEMILLA,
         con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+        con_curva=False,
     )
 
     assert ruta_chequeos.exists()
@@ -441,7 +493,150 @@ def test_una_advertencia_no_detiene_el_entrenamiento_por_defecto(
         nombre_modelo="ridge",
         semilla=SEMILLA,
         con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+        con_curva=False,
     )
 
     assert resultado.chequeos_particion is not None
     assert "advertencia" in set(resultado.chequeos_particion["severidad"])
+
+
+# --- Evidencia de la validacion del modelo ----------------------------------------------
+
+
+def test_ejecutar_pipeline_guarda_la_evidencia_de_la_validacion(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """Tablas, curva y segmentos: la ejecucion que produjo el modelo deja por escrito
+    como se valido."""
+    reportes = tmp_path / "reportes"
+
+    resultado = ejecutar_pipeline(
+        RutasEntrenamiento(
+            parquet_features,
+            tmp_path / "modelo.joblib",
+            tmp_path / "metricas.parquet",
+            None,
+            reportes,
+        ),
+        nombre_modelo="ridge",
+        semilla=SEMILLA,
+        con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+    )
+
+    assert (reportes / ARCHIVO_VALIDACION).exists()
+    assert (reportes / ARCHIVO_DIAGNOSTICO).exists()
+    assert (reportes / ARCHIVO_CURVA).exists()
+    assert (reportes / ARCHIVO_SEGMENTOS).exists()
+    assert pd.read_parquet(reportes / ARCHIVO_VALIDACION).equals(resultado.validacion)
+    assert pd.read_parquet(reportes / ARCHIVO_DIAGNOSTICO).equals(resultado.diagnostico)
+
+
+def test_se_puede_omitir_la_curva_de_aprendizaje(parquet_features: Path, tmp_path: Path) -> None:
+    """La curva es la parte cara: se puede saltar sin perder el resto de la validacion."""
+    reportes = tmp_path / "reportes"
+
+    resultado = ejecutar_pipeline(
+        RutasEntrenamiento(
+            parquet_features,
+            tmp_path / "modelo.joblib",
+            tmp_path / "metricas.parquet",
+            None,
+            reportes,
+        ),
+        nombre_modelo="ridge",
+        semilla=SEMILLA,
+        con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+        con_curva=False,
+    )
+
+    assert resultado.curva is None
+    assert not (reportes / ARCHIVO_CURVA).exists()
+    assert (reportes / ARCHIVO_VALIDACION).exists()
+
+
+def test_el_grafico_de_la_curva_se_genera_bajo_peticion(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """La visualizacion del entregable, opcional porque matplotlib es dependencia de dev."""
+    reportes = tmp_path / "reportes"
+
+    ejecutar_pipeline(
+        RutasEntrenamiento(
+            parquet_features,
+            tmp_path / "modelo.joblib",
+            tmp_path / "metricas.parquet",
+            None,
+            reportes,
+        ),
+        nombre_modelo="ridge",
+        semilla=SEMILLA,
+        con_referencias=False,
+        configuracion_validacion=_configuracion_rapida(),
+        con_grafico=True,
+    )
+
+    assert (reportes / ARCHIVO_GRAFICO_CURVA).exists()
+
+
+def test_main_acepta_el_esquema_de_validacion_por_linea_de_comandos(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """La validacion es reproducible: el esquema, los pliegues y la semilla son opciones."""
+    reportes = tmp_path / "reportes"
+
+    codigo = main(
+        [
+            "--features",
+            str(parquet_features),
+            "--modelo",
+            "ridge",
+            "--modelo-salida",
+            str(tmp_path / "modelo.joblib"),
+            "--metricas",
+            str(tmp_path / "metricas.parquet"),
+            "--chequeos-particion",
+            str(tmp_path / "chequeos.parquet"),
+            "--reportes",
+            str(reportes),
+            "--validador",
+            "estratificado",
+            "--pliegues",
+            "3",
+            "--sin-curva",
+            "--sin-referencias",
+        ]
+    )
+
+    assert codigo == 0
+    validacion = pd.read_parquet(reportes / ARCHIVO_VALIDACION)
+    assert set(validacion["validador"]) == {"estratificado"}
+    assert set(validacion["pliegues"]) == {3}
+
+
+def test_la_validacion_es_reproducible_con_la_misma_configuracion(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """Dos ejecuciones con la misma semilla dan exactamente las mismas cifras."""
+    rutas = RutasEntrenamiento(
+        parquet_features,
+        tmp_path / "modelo.joblib",
+        tmp_path / "metricas.parquet",
+        None,
+        tmp_path / "reportes",
+    )
+    argumentos = {
+        "nombre_modelo": "ridge",
+        "semilla": SEMILLA,
+        "con_referencias": False,
+        "configuracion_validacion": _configuracion_rapida(),
+        "con_curva": False,
+    }
+
+    primera = ejecutar_pipeline(rutas, **argumentos)
+    segunda = ejecutar_pipeline(rutas, **argumentos)
+
+    assert primera.validacion is not None and segunda.validacion is not None
+    assert primera.validacion.equals(segunda.validacion)

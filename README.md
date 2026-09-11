@@ -209,6 +209,50 @@ El informe se guarda **siempre**, pasen o no los chequeos, en
          deriva_multivariante                          ok       0.4804    0.65
 ```
 
+### Validación del modelo
+
+Una métrica en prueba es **un número con una sola muestra**: cambia la semilla y cambia el
+número. Cada ejecución mide las mismas métricas en los tres escenarios y traduce la
+comparación en veredictos con acciones (`src/model/validacion.py`).
+
+| Opción | Para qué sirve |
+|---|---|
+| `--validador` | `kfold`, `repetido` (por defecto), `estratificado` o `series_temporales` |
+| `--pliegues` / `--repeticiones` | tamaño de la validación cruzada (5 × 5) |
+| `--sin-curva` | omite la curva de aprendizaje, que es la parte cara |
+| `--grafico` | guarda además la curva como PNG (necesita `matplotlib`) |
+| `--reportes` | directorio donde se deja la evidencia |
+
+```text
+ metrica  entrenamiento  validacion_cruzada  desviacion_cv  prueba  brecha_train_cv  diferencia_cv_prueba
+     MAE            0.0              0.0445         0.0046  0.0467           0.0445                0.0022
+    RMSE            0.0              0.0644         0.0072  0.0659           0.0644                0.0014
+      R2            1.0              0.7897         0.0444  0.7977          -0.2103                0.0081
+    MAPE            0.0              0.0724         0.0091  0.0734           0.0724                0.0011
+spearman            1.0              0.8905         0.0318  0.8930          -0.1095                0.0025
+
+Diagnostico [sobreajuste]: sobreajuste | MAE 0.0000 en entrenamiento y 0.0445 en validacion (100% de brecha)
+   -> limitar la capacidad del modelo (profundidad, min_samples_leaf), regularizar o conseguir mas datos
+Diagnostico [subajuste]: capacidad suficiente | R2 de validacion cruzada 0.7897 (umbral 0.5)
+Diagnostico [estabilidad]: estable | desviacion entre pliegues 0.0046, un 10% del MAE medio
+Diagnostico [degradacion_cv_prueba]: coherente | 0.0445 en validacion y 0.0467 en prueba (5%, umbral 10%)
+```
+
+**Lo que el diagnóstico encontró en el modelo actual:** el `extra_trees` tiene **MAE 0 en
+entrenamiento** —los árboles sin podar memorizan— y 0.0445 en validación cruzada. Generaliza
+bien (la prueba confirma la validación, 5 % de diferencia), pero la brecha está ahí y el
+informe la nombra en vez de esconderla.
+
+| Artefacto en `data/08_reporting/` | Contenido |
+|---|---|
+| `validacion_modelo.parquet` | métricas en entrenamiento, validación cruzada y prueba, con el validador y la semilla usados |
+| `diagnostico_generalizacion.parquet` | veredicto, evidencia y acción recomendada por aspecto |
+| `curva_aprendizaje.parquet` / `.png` | error según el número de muestras: ¿ayudarían más datos? |
+| `segmentos_debiles.parquet` | error por tercio de cada atributo: ¿a quién le funciona peor? |
+
+La validación es **reproducible**: el validador, los pliegues, las repeticiones y la semilla
+se guardan como columnas del propio informe, así que el artefacto dice cómo se produjo.
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
@@ -324,6 +368,8 @@ uv add --group dev plotly
 │   │   ├── preprocesamiento.py         # pipeline de sklearn: imputacion, encoding y escalado
 │   │   └── validacion.py               # motor de validacion: esquemas, reglas e informes
 │   ├── model                           # model training, evaluation, validation, export
+│   │   ├── heuristica.py               # modelo base: regla manual como estimador sklearn
+│   │   └── validacion.py               # validacion cruzada, diagnostico y curva de aprendizaje
 │   ├── inference                       # model prediction, serving, monitoring
 │   └── pipelines                       # orchestration of pipelines
 │       ├── feature_pipeline            # transforms raw data into features and labels

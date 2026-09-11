@@ -19,6 +19,13 @@ ajuste, y la imputación y el escalado viven dentro del `Pipeline`, así que sus
 entrenamiento**. Es la razón por la que el feature pipeline deja esos pasos sin hacer: el
 único sitio donde pueden ajustarse sin contaminar la evaluación es aquí, después de partir.
 
+**La validación no se queda en una cifra de prueba.** Cada ejecución mide las mismas
+métricas en entrenamiento, en validación cruzada sobre *train* y en prueba, y traduce esa
+comparación en un diagnóstico explícito de subajuste, sobreajuste, estabilidad y
+degradación, con la acción recomendada para cada uno (`src/model/validacion.py`). La
+evidencia —tablas, curva de aprendizaje y segmentos débiles— queda guardada en
+`data/08_reporting/`.
+
 **El modelo entrenado no se evalúa contra sí mismo.** Cada ejecución mide también las dos
 referencias de `5-models` —la media del objetivo y la heurística manual de `03.3`— sobre la
 misma partición. Un MAE de 0.047 no significa nada solo; comparado con el 0.119 del modelo
@@ -46,7 +53,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.base import BaseEstimator, clone
+from sklearn.base import BaseEstimator
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import ExtraTreesRegressor
 from sklearn.linear_model import Ridge
@@ -56,7 +63,7 @@ from sklearn.metrics import (
     r2_score,
     root_mean_squared_error,
 )
-from sklearn.model_selection import KFold, cross_validate, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 # el script se ejecuta directamente, asi que `src/` no esta en sys.path todavia
@@ -68,6 +75,16 @@ from data.particion import Particion, validar_particion_train_test  # noqa: E402
 from data.preprocesamiento import construir_preprocesamiento  # noqa: E402
 from data.validacion import ErrorValidacion  # noqa: E402
 from model.heuristica import HeuristicaAdmision  # noqa: E402
+from model.validacion import (  # noqa: E402
+    VALIDADORES,
+    ConfiguracionValidacion,
+    comparar_train_cv_test,
+    curva_de_aprendizaje,
+    diagnosticar_generalizacion,
+    guardar_grafico_curva,
+    segmentos_debiles,
+    validar_con_cruzada,
+)
 from pipelines.feature_pipeline.feature_pipeline import (  # noqa: E402
     TARGET,
     buscar_raiz_proyecto,
@@ -80,6 +97,7 @@ logger = logging.getLogger(__name__)
 PROPORCION_TEST = 0.25
 SEMILLA = 42
 PLIEGUES_VALIDACION = 5
+REPETICIONES_VALIDACION = 5
 
 # presupuesto por defecto de la busqueda automatica, en segundos (solo con --modelo automl)
 PRESUPUESTO_AUTOML = 180
@@ -89,6 +107,14 @@ RUTA_FEATURES_RELATIVA = Path("data") / "04_feature" / "admisiones_features.parq
 RUTA_MODELO_RELATIVA = Path("data") / "06_models" / "modelo_training_pipeline.joblib"
 RUTA_METRICAS_RELATIVA = Path("data") / "08_reporting" / "metricas_training_pipeline.parquet"
 RUTA_CHEQUEOS_RELATIVA = Path("data") / "08_reporting" / "chequeos_particion.parquet"
+DIR_REPORTES_RELATIVA = Path("data") / "08_reporting"
+
+# nombres de los artefactos de la validacion del modelo dentro del directorio de reportes
+ARCHIVO_VALIDACION = "validacion_modelo.parquet"
+ARCHIVO_DIAGNOSTICO = "diagnostico_generalizacion.parquet"
+ARCHIVO_CURVA = "curva_aprendizaje.parquet"
+ARCHIVO_GRAFICO_CURVA = "curva_aprendizaje.png"
+ARCHIVO_SEGMENTOS = "segmentos_debiles.parquet"
 
 # referencias que se miden en cada ejecucion junto al modelo elegido
 MODELO_DE_REFERENCIA = "dummy"
@@ -161,6 +187,7 @@ class RutasEntrenamiento:
     modelo: Path
     metricas: Path
     chequeos: Path | None = None
+    reportes: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +199,10 @@ class ResultadoEntrenamiento:
     ruta_modelo: Path
     ruta_metricas: Path
     chequeos_particion: pd.DataFrame | None = None
+    validacion: pd.DataFrame | None = None
+    diagnostico: pd.DataFrame | None = None
+    curva: pd.DataFrame | None = None
+    segmentos: pd.DataFrame | None = None
 
 
 def leer_features(ruta: Path) -> pd.DataFrame:
@@ -268,34 +299,56 @@ def evaluar(modelo: Pipeline, X: pd.DataFrame, y: pd.Series, nombre: str) -> dic
     }
 
 
-def validar_en_entrenamiento(
+def validar_modelo(
     modelo: Pipeline,
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    semilla: int = SEMILLA,
-    pliegues: int = PLIEGUES_VALIDACION,
-) -> dict[str, float]:
-    """Validación cruzada sobre *train*: mide la estabilidad y detecta el sobreajuste.
+    particion: Particion,
+    metricas_prueba: dict[str, float],
+    configuracion: ConfiguracionValidacion | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Valida la generalización del modelo y devuelve la comparación y el diagnóstico.
 
-    La brecha entre el error de entrenamiento y el de validación es el diagnóstico: si el
-    modelo acierta mucho más sobre los datos que ya vio, está memorizando. Un árbol sin
-    podar tiene una brecha enorme y aun así puede dar buenas métricas en prueba por azar.
+    Tres escenarios en una sola tabla —entrenamiento, validación cruzada y prueba— y, a
+    partir de ella, un veredicto por aspecto con la acción recomendada. La métrica de
+    prueba llega ya calculada porque el modelo entrenado es el mismo: repetirla aquí sería
+    volver a predecir sobre las mismas filas.
+
+    La validación cruzada se ejecuta sobre un clon **sin entrenar**, así que cada pliegue
+    ajusta también el preprocesamiento con sus propios datos: usar el modelo ya ajustado
+    filtraría el conjunto de validación de cada pliegue.
     """
-    resultado = cross_validate(
-        clone(modelo),
-        X_train,
-        y_train,
-        cv=KFold(n_splits=pliegues, shuffle=True, random_state=semilla),
-        scoring="neg_mean_absolute_error",
-        return_train_score=True,
+    config = configuracion or ConfiguracionValidacion()
+    validacion = validar_con_cruzada(modelo, particion.X_train, particion.y_train, config)
+    comparacion = comparar_train_cv_test(validacion, metricas_prueba)
+    diagnostico = diagnosticar_generalizacion(comparacion)
+
+    logger.info(
+        "Validacion cruzada (%s, %d pliegues x %d repeticiones, semilla %d):\n%s",
+        config.validador,
+        config.pliegues,
+        config.repeticiones if config.validador == "repetido" else 1,
+        config.semilla,
+        comparacion.drop(columns=["validador", "pliegues", "repeticiones", "semilla"])
+        .round(4)
+        .to_string(index=False),
     )
-    mae_validacion = float(-resultado["test_score"].mean())
-    mae_entrenamiento = float(-resultado["train_score"].mean())
+    for _, fila in diagnostico.iterrows():
+        logger.info(
+            "Diagnostico [%s]: %s | %s", fila["aspecto"], fila["veredicto"], fila["evidencia"]
+        )
+    return comparacion, diagnostico
+
+
+def resumen_de_validacion(comparacion: pd.DataFrame) -> dict[str, float]:
+    """Extrae de la comparación las cifras que acompañan al modelo en la tabla de métricas."""
+    mae = comparacion.loc[comparacion["metrica"] == "MAE"]
+    if mae.empty:
+        return {}
+    fila = mae.iloc[0]
     return {
-        "MAE_cv": mae_validacion,
-        "MAE_cv_desv": float(resultado["test_score"].std()),
-        "MAE_entrenamiento": mae_entrenamiento,
-        "brecha_train_cv": mae_validacion - mae_entrenamiento,
+        "MAE_cv": float(fila["validacion_cruzada"]),
+        "MAE_cv_desv": float(fila["desviacion_cv"]),
+        "MAE_entrenamiento": float(fila["entrenamiento"]),
+        "brecha_train_cv": float(fila["brecha_train_cv"]),
     }
 
 
@@ -360,7 +413,7 @@ def _guardar_tabla(tabla: pd.DataFrame, ruta: Path, etiqueta: str) -> Path:
     """Escribe una tabla de resultados en parquet, junto al resto de reportes."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
     tabla.to_parquet(ruta, index=False, engine="pyarrow", compression="snappy")
-    logger.info("%s guardadas en %s", etiqueta, ruta)
+    logger.info("%s -> %s", etiqueta, ruta)
     return ruta
 
 
@@ -379,6 +432,30 @@ def guardar_chequeos(chequeos: pd.DataFrame, ruta: Path) -> Path:
     return _guardar_tabla(chequeos, ruta, "Chequeos de la particion")
 
 
+def _guardar_reportes_de_validacion(
+    directorio: Path | None,
+    comparacion: pd.DataFrame,
+    diagnostico: pd.DataFrame,
+    curva: pd.DataFrame | None,
+    segmentos: pd.DataFrame,
+) -> None:
+    """Persiste la evidencia de la validación: comparación, diagnóstico, curva y segmentos.
+
+    Se guarda siempre que haya directorio de reportes, pase o no el diagnóstico: la
+    ejecución que produjo el modelo tiene que dejar por escrito cómo se validó.
+    """
+    if directorio is None:
+        return
+    _guardar_tabla(comparacion, directorio / ARCHIVO_VALIDACION, "Validacion del modelo")
+    _guardar_tabla(diagnostico, directorio / ARCHIVO_DIAGNOSTICO, "Diagnostico de generalizacion")
+    if curva is not None:
+        _guardar_tabla(curva, directorio / ARCHIVO_CURVA, "Curva de aprendizaje")
+    if not segmentos.empty:
+        _guardar_tabla(
+            segmentos, directorio / ARCHIVO_SEGMENTOS, "Segmentos del conjunto de prueba"
+        )
+
+
 def ejecutar_pipeline(  # noqa: PLR0913
     # cada parametro es una opcion de la linea de comandos: agruparlos en un objeto solo
     # moveria la lista de sitio y alejaria la firma de la interfaz que ve quien lo ejecuta
@@ -389,6 +466,9 @@ def ejecutar_pipeline(  # noqa: PLR0913
     con_referencias: bool = True,
     proporcion_test: float = PROPORCION_TEST,
     particion_estricta: bool = False,
+    configuracion_validacion: ConfiguracionValidacion | None = None,
+    con_curva: bool = True,
+    con_grafico: bool = False,
     **parametros_modelo: Any,
 ) -> ResultadoEntrenamiento:
     """Ejecuta el entrenamiento completo y devuelve el modelo con sus métricas."""
@@ -409,7 +489,14 @@ def ejecutar_pipeline(  # noqa: PLR0913
         construir_modelo(nombre_modelo, semilla, **parametros_modelo), X_train, y_train
     )
     evaluacion = evaluar(modelo, X_test, y_test, nombre_modelo)
-    evaluacion.update(validar_en_entrenamiento(modelo, X_train, y_train, semilla))
+    config_validacion = configuracion_validacion or ConfiguracionValidacion(semilla=semilla)
+    comparacion, diagnostico = validar_modelo(
+        construir_modelo(nombre_modelo, semilla, **parametros_modelo),
+        particion,
+        {clave: valor for clave, valor in evaluacion.items() if clave != "modelo"},
+        config_validacion,
+    )
+    evaluacion.update(resumen_de_validacion(comparacion))
     logger.info(
         "%s -> MAE %.4f  RMSE %.4f  R2 %.4f  spearman %.4f",
         nombre_modelo,
@@ -427,10 +514,43 @@ def ejecutar_pipeline(  # noqa: PLR0913
             modelo_referencia = entrenar(construir_modelo(referencia, semilla), X_train, y_train)
             evaluaciones.append(evaluar(modelo_referencia, X_test, y_test, referencia))
 
+    curva = None
+    if con_curva:
+        curva = curva_de_aprendizaje(
+            construir_modelo(nombre_modelo, semilla, **parametros_modelo),
+            X_train,
+            y_train,
+            config_validacion.sin_repeticiones(),
+        )
+        logger.info(
+            "Curva de aprendizaje:\n%s",
+            curva.round(4).to_string(index=False),
+        )
+    segmentos = segmentos_debiles(modelo, X_test, y_test)
+    debiles = segmentos.loc[segmentos["debil"]] if not segmentos.empty else segmentos
+    logger.info(
+        "Segmentos del conjunto de prueba: %d analizados, %d con error muy por encima del global",
+        len(segmentos),
+        len(debiles),
+    )
+
     metricas = construir_informe(evaluaciones)
     guardar_modelo(modelo, rutas.modelo, X_test)
     guardar_metricas(metricas, rutas.metricas)
-    return ResultadoEntrenamiento(modelo, metricas, rutas.modelo, rutas.metricas, chequeos)
+    _guardar_reportes_de_validacion(rutas.reportes, comparacion, diagnostico, curva, segmentos)
+    if con_grafico and curva is not None and rutas.reportes is not None:
+        guardar_grafico_curva(curva, rutas.reportes / ARCHIVO_GRAFICO_CURVA)
+    return ResultadoEntrenamiento(
+        modelo,
+        metricas,
+        rutas.modelo,
+        rutas.metricas,
+        chequeos,
+        comparacion,
+        diagnostico,
+        curva,
+        segmentos,
+    )
 
 
 def _parsear_argumentos(argumentos: list[str] | None = None) -> argparse.Namespace:
@@ -468,6 +588,40 @@ def _parsear_argumentos(argumentos: list[str] | None = None) -> argparse.Namespa
         type=Path,
         default=raiz / RUTA_CHEQUEOS_RELATIVA,
         help="Ruta del informe de chequeos de la particion (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--reportes",
+        type=Path,
+        default=raiz / DIR_REPORTES_RELATIVA,
+        help="Directorio de los reportes de validacion (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--validador",
+        choices=sorted(VALIDADORES),
+        default="repetido",
+        help="Esquema de validacion cruzada sobre train (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--pliegues",
+        type=int,
+        default=PLIEGUES_VALIDACION,
+        help="Pliegues de la validacion cruzada (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--repeticiones",
+        type=int,
+        default=REPETICIONES_VALIDACION,
+        help="Repeticiones del validador 'repetido' (por defecto: %(default)s)",
+    )
+    parser.add_argument(
+        "--sin-curva",
+        action="store_true",
+        help="Omite la curva de aprendizaje (mas rapido)",
+    )
+    parser.add_argument(
+        "--grafico",
+        action="store_true",
+        help="Guarda tambien la curva de aprendizaje como PNG (necesita matplotlib)",
     )
     parser.add_argument(
         "--particion-estricta",
@@ -512,12 +666,21 @@ def main(argumentos: list[str] | None = None) -> int:
                 opciones.modelo_salida,
                 opciones.metricas,
                 opciones.chequeos_particion,
+                opciones.reportes,
             ),
             nombre_modelo=opciones.modelo,
             proporcion_test=opciones.proporcion_test,
             semilla=opciones.semilla,
             con_referencias=not opciones.sin_referencias,
             particion_estricta=opciones.particion_estricta,
+            configuracion_validacion=ConfiguracionValidacion(
+                validador=opciones.validador,
+                pliegues=opciones.pliegues,
+                repeticiones=opciones.repeticiones,
+                semilla=opciones.semilla,
+            ),
+            con_curva=not opciones.sin_curva,
+            con_grafico=opciones.grafico,
             **parametros,
         )
     except (ErrorValidacion, FileNotFoundError) as error:
