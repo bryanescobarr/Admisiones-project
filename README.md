@@ -70,6 +70,35 @@ de negocio mal escrita no. La demo admite campos vacíos (el pipeline imputa), m
 rango de referencia junto a la cifra y **avisa explícitamente** cuando la predicción cae en
 el tramo donde el modelo tiende a ser optimista.
 
+## 🏭 Feature pipeline
+
+Script ejecutable que automatiza lo que antes solo existía dentro de los notebooks
+`2-exploration` y `4-feat_eng`: leer la fuente cruda, limpiarla, tiparla, validarla y dejar
+las features guardadas en disco.
+
+```bash
+uv run python src/pipelines/feature_pipeline/feature_pipeline.py
+```
+
+```text
+data/01_raw/Admission_Predict.csv  ->  data/04_feature/admisiones_features.parquet
+```
+
+| Opción | Para qué sirve |
+|---|---|
+| `--entrada` | CSV de datos crudos (por defecto, el del repositorio) |
+| `--salida` | parquet de features a generar |
+| `--con-derivados` | añade `indice_academico`, `sop_lor_media` y `rating_x_research` |
+
+Qué hace: normaliza los nombres de columna, unifica las representaciones de nulo (`n/a`,
+`-`, celda vacía), elimina duplicados exactos, asigna los tipos nullable de pandas, **valida
+el dominio documentado** en `data/01_raw/Informacion.txt` y recorta los valores imposibles.
+
+Qué **no** hace, a propósito: imputar y escalar. Esos pasos aprenden sus parámetros de los
+datos (la mediana, la media, la desviación) y, calculados antes de particionar, filtrarían
+información del conjunto de prueba al de entrenamiento. Viven en el `Pipeline` de
+scikit-learn de `4-feat_eng`, que se ajusta solo con *train*.
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
@@ -184,6 +213,7 @@ uv add --group dev plotly
 │   ├── inference                       # model prediction, serving, monitoring
 │   └── pipelines                       # orchestration of pipelines
 │       ├── feature_pipeline            # transforms raw data into features and labels
+│       │   └── feature_pipeline.py     # raw csv -> data/04_feature/admisiones_features.parquet
 │       ├── training_pipeline           # transforms features and labels into a model
 │       └── inference_pipeline          # takes features and a trained model for predictions
 ├── tests                               # test code for your project
