@@ -5,11 +5,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from data.particion import Particion
 from data.validacion import ErrorValidacion
 from pipelines.feature_pipeline.feature_pipeline import TARGET
 from pipelines.training_pipeline.train_pipeline import (
     CATALOGO_MODELOS,
     RutasEntrenamiento,
+    chequear_particion,
     construir_informe,
     construir_modelo,
     ejecutar_pipeline,
@@ -116,8 +118,8 @@ def test_separar_train_test_deja_el_objetivo_fuera_de_los_predictores() -> None:
 
 def test_la_particion_es_reproducible_con_la_misma_semilla() -> None:
     """Sin reproducibilidad, dos ejecuciones no son comparables."""
-    primera = separar_train_test(_features(), PROPORCION_TEST, SEMILLA)[0]
-    segunda = separar_train_test(_features(), PROPORCION_TEST, SEMILLA)[0]
+    primera = separar_train_test(_features(), PROPORCION_TEST, SEMILLA).X_train
+    segunda = separar_train_test(_features(), PROPORCION_TEST, SEMILLA).X_train
 
     assert primera.index.tolist() == segunda.index.tolist()
 
@@ -331,3 +333,115 @@ def test_el_catalogo_documenta_cada_modelo() -> None:
     for nombre, definicion in CATALOGO_MODELOS.items():
         assert definicion["descripcion"], f"{nombre} sin descripcion"
         assert callable(definicion["crear"])
+
+
+# --- Chequeos de la particion train/test ------------------------------------------------
+
+
+def test_chequear_particion_devuelve_el_informe_completo() -> None:
+    """El pipeline deja constancia de cada chequeo, no solo de los que fallan."""
+    particion = separar_train_test(_features(400), PROPORCION_TEST, SEMILLA)
+
+    informe = chequear_particion(particion)
+
+    assert set(informe["severidad"]) == {"ok"}
+    assert "indices_solapados" in informe["chequeo"].tolist()
+
+
+def test_chequear_particion_detecta_la_fuga_de_informacion() -> None:
+    """Entrenar con fuga es peor que no entrenar: produce metricas en las que se confia."""
+    features = _features(200)
+    X = features.drop(columns=[TARGET])
+    y = features[TARGET]
+
+    particion = Particion(X.iloc[:150], X.iloc[100:], y.iloc[:150], y.iloc[100:])
+
+    with pytest.raises(ErrorValidacion, match="indices_solapados"):
+        chequear_particion(particion)
+
+
+def test_ejecutar_pipeline_guarda_el_informe_de_los_chequeos(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """Los resultados de las validaciones de la particion se persisten con las metricas."""
+    ruta_chequeos = tmp_path / "chequeos.parquet"
+
+    resultado = ejecutar_pipeline(
+        RutasEntrenamiento(
+            parquet_features,
+            tmp_path / "modelo.joblib",
+            tmp_path / "metricas.parquet",
+            ruta_chequeos,
+        ),
+        nombre_modelo="ridge",
+        semilla=SEMILLA,
+        con_referencias=False,
+    )
+
+    assert ruta_chequeos.exists()
+    guardado = pd.read_parquet(ruta_chequeos)
+    assert guardado.equals(resultado.chequeos_particion)
+    assert not guardado.empty
+
+
+def test_en_modo_estricto_una_particion_sospechosa_detiene_el_entrenamiento(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """Con 20 filas de prueba salta la advertencia de tamano; en estricto, no se entrena."""
+    ruta_modelo = tmp_path / "modelo.joblib"
+
+    with pytest.raises(ErrorValidacion, match="tamano_del_conjunto_de_prueba"):
+        ejecutar_pipeline(
+            RutasEntrenamiento(parquet_features, ruta_modelo, tmp_path / "metricas.parquet"),
+            nombre_modelo="ridge",
+            semilla=SEMILLA,
+            particion_estricta=True,
+        )
+
+    assert not ruta_modelo.exists()
+
+
+def test_main_devuelve_codigo_de_error_si_la_particion_no_pasa_los_chequeos(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """El error es controlado: informe, codigo 1 y ningun artefacto escrito."""
+    ruta_modelo = tmp_path / "modelo.joblib"
+
+    codigo = main(
+        [
+            "--features",
+            str(parquet_features),
+            "--modelo",
+            "ridge",
+            "--modelo-salida",
+            str(ruta_modelo),
+            "--metricas",
+            str(tmp_path / "metricas.parquet"),
+            "--chequeos-particion",
+            str(tmp_path / "chequeos.parquet"),
+            "--particion-estricta",
+        ]
+    )
+
+    assert codigo == 1
+    assert not ruta_modelo.exists()
+
+
+def test_una_advertencia_no_detiene_el_entrenamiento_por_defecto(
+    parquet_features: Path, tmp_path: Path
+) -> None:
+    """La deriva se avisa y se registra; solo la fuga bloquea el pipeline."""
+    resultado = ejecutar_pipeline(
+        RutasEntrenamiento(
+            parquet_features,
+            tmp_path / "modelo.joblib",
+            tmp_path / "metricas.parquet",
+            tmp_path / "chequeos.parquet",
+        ),
+        nombre_modelo="ridge",
+        semilla=SEMILLA,
+        con_referencias=False,
+    )
+
+    assert resultado.chequeos_particion is not None
+    assert "advertencia" in set(resultado.chequeos_particion["severidad"])
