@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from data.validacion import ErrorValidacion
 from pipelines.feature_pipeline.feature_pipeline import (
     COLUMNAS_DERIVADAS,
     COLUMNAS_ESPERADAS,
@@ -18,18 +19,22 @@ from pipelines.feature_pipeline.feature_pipeline import (
     normalizar_nombres,
     tipar_columnas,
     unificar_nulos,
-    validar_dominio,
+    validar_features,
+    validar_fuente,
 )
 
 # filas distintas que quedan del CSV de ejemplo tras eliminar la copia exacta
 FILAS_UNICAS = 2
 
 # una fila valida, una con centinelas de nulo ('n/a', '-') y una copia exacta de la primera
-CSV_EJEMPLO = """GRE Score,TOEFL Score,University Rating,SOP,LOR ,CGPA,Research,Chance of Admit
-337,118,4,4.5,4.5,9.65,1,0.92
+CSV_EJEMPLO_FILAS = """337,118,4,4.5,4.5,9.65,1,0.92
 n/a,107,3,4,-,8.87,0,0.76
 337,118,4,4.5,4.5,9.65,1,0.92
 """
+CSV_EJEMPLO = (
+    "GRE Score,TOEFL Score,University Rating,SOP,LOR ,CGPA,Research,Chance of Admit\n"
+    + CSV_EJEMPLO_FILAS
+)
 
 
 @pytest.fixture
@@ -151,7 +156,7 @@ def test_tipar_columnas_falla_con_un_research_no_booleano() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="no booleanos"):
+    with pytest.raises(ErrorValidacion, match="valor_no_booleano"):
         tipar_columnas(datos)
 
 
@@ -170,33 +175,40 @@ def test_tipar_columnas_falla_si_una_conversion_descarta_valores() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="descartados al convertir"):
+    with pytest.raises(ErrorValidacion, match="valor_no_convertible"):
         tipar_columnas(datos)
 
 
-def test_validar_dominio_acepta_los_datos_correctos() -> None:
+def test_validar_fuente_acepta_los_datos_correctos() -> None:
     """El dataset de ejemplo respeta los rangos de Informacion.txt."""
     datos = _datos_tipados()
 
-    assert validar_dominio(datos) is datos
+    assert validar_fuente(datos) is datos
 
 
-def test_validar_dominio_detecta_un_valor_imposible() -> None:
+def test_validar_fuente_detecta_un_valor_imposible() -> None:
     """Un GRE de 900 en la fuente es un problema de captura, no algo que recortar."""
     datos = _datos_tipados()
     datos.loc[0, "gre_score"] = 900
 
-    with pytest.raises(ValueError, match="fuera del dominio"):
-        validar_dominio(datos)
+    with pytest.raises(ErrorValidacion, match="fuera_de_rango"):
+        validar_fuente(datos)
 
 
-def test_validar_dominio_rechaza_un_objetivo_nulo() -> None:
+def test_validar_fuente_rechaza_un_objetivo_nulo() -> None:
     """Una fila sin `chance_of_admit` no sirve para entrenar."""
     datos = _datos_tipados()
     datos.loc[0, TARGET] = pd.NA
 
-    with pytest.raises(ValueError, match="no puede tener nulos"):
-        validar_dominio(datos)
+    with pytest.raises(ErrorValidacion, match="exceso_de_nulos"):
+        validar_fuente(datos)
+
+
+def test_validar_features_acepta_la_salida_del_pipeline() -> None:
+    """Las features construidas a partir de datos correctos cumplen su contrato."""
+    features = construir_features(_datos_tipados(), con_derivados=True)
+
+    assert validar_features(features) is features
 
 
 def test_construir_features_devuelve_float64_con_el_objetivo_al_final() -> None:
@@ -289,3 +301,103 @@ def test_el_pipeline_reproduce_el_dataset_de_los_notebooks(tmp_path: Path) -> No
     assert len(obtenido) == len(esperado)
     assert obtenido[TARGET].to_numpy().tolist() == esperado[TARGET].astype(float).tolist()
     assert obtenido["cgpa"].isna().sum() == int(esperado["cgpa"].isna().sum())
+
+
+# --- Validación de datos: qué pasa cuando la fuente trae algo que no debería -------------
+
+
+def _escribir_csv(tmp_path: Path, filas: str, nombre: str = "invalido.csv") -> Path:
+    """Escribe un CSV con la cabecera real del dataset y las filas indicadas."""
+    ruta = tmp_path / nombre
+    ruta.write_text(
+        "GRE Score,TOEFL Score,University Rating,SOP,LOR ,CGPA,Research,Chance of Admit\n" + filas,
+        encoding="utf-8",
+    )
+    return ruta
+
+
+def test_no_se_persisten_features_si_falla_una_validacion(tmp_path: Path) -> None:
+    """El requisito central: un dato invalido detiene el proceso sin escribir nada."""
+    entrada = _escribir_csv(tmp_path, "900,118,4,4.5,4.5,9.65,1,0.92\n")
+    salida = tmp_path / "no_deberia_existir.parquet"
+
+    with pytest.raises(ErrorValidacion, match="fuera_de_rango"):
+        ejecutar_pipeline(entrada, salida)
+
+    assert not salida.exists()
+
+
+def test_un_fallo_de_validacion_deja_intacto_el_parquet_anterior(tmp_path: Path) -> None:
+    """Mejor quedarse con las features de ayer que sustituirlas por unas corruptas."""
+    salida = tmp_path / "features.parquet"
+    ejecutar_pipeline(_escribir_csv(tmp_path, CSV_EJEMPLO_FILAS, "bueno.csv"), salida)
+    contenido_anterior = salida.read_bytes()
+
+    with pytest.raises(ErrorValidacion):
+        ejecutar_pipeline(_escribir_csv(tmp_path, "900,118,4,4.5,4.5,9.65,1,0.92\n"), salida)
+
+    assert salida.read_bytes() == contenido_anterior
+
+
+def test_main_reporta_el_fallo_y_devuelve_codigo_de_error(tmp_path: Path) -> None:
+    """Un orquestador necesita un codigo de salida, no un traceback."""
+    entrada = _escribir_csv(tmp_path, "310,105,9,3,3,8.1,0,0.6\n")
+    salida = tmp_path / "no_deberia_existir.parquet"
+
+    codigo = main(["--entrada", str(entrada), "--salida", str(salida)])
+
+    assert codigo == 1
+    assert not salida.exists()
+
+
+def test_el_tipado_rechaza_una_categoria_invalida(tmp_path: Path) -> None:
+    """Un rating 9 no puede convertirse en nulo en silencio al construir la categorica."""
+    entrada = _escribir_csv(tmp_path, "310,105,9,3,3,8.1,0,0.6\n")
+
+    with pytest.raises(ErrorValidacion, match="categoria_invalida"):
+        ejecutar_pipeline(entrada, tmp_path / "salida.parquet")
+
+
+def test_el_objetivo_vacio_detiene_el_pipeline(tmp_path: Path) -> None:
+    """Sin `chance_of_admit` la fila no sirve, y `max_nulos=0` se exige siempre."""
+    entrada = _escribir_csv(tmp_path, "310,105,3,3,3,8.1,0,\n")
+
+    with pytest.raises(ErrorValidacion, match="exceso_de_nulos"):
+        ejecutar_pipeline(entrada, tmp_path / "salida.parquet")
+
+
+def test_un_registro_casi_vacio_detiene_el_pipeline(tmp_path: Path) -> None:
+    """Con menos de cuatro predictores conocidos no hay perfil que transformar."""
+    entrada = _escribir_csv(tmp_path, "n/a,n/a,n/a,n/a,3,8.1,n/a,0.6\n")
+
+    with pytest.raises(ErrorValidacion, match="registro_utilizable"):
+        ejecutar_pipeline(entrada, tmp_path / "salida.parquet")
+
+
+def test_validar_features_detecta_un_derivado_incoherente() -> None:
+    """Si una formula cambia a medias, la incoherencia aparece antes de persistir."""
+    features = construir_features(_datos_tipados(), con_derivados=True)
+    features.loc[0, "sop_lor_media"] = 99.0
+
+    with pytest.raises(ErrorValidacion, match="sop_lor_media_coherente"):
+        validar_features(features)
+
+
+def test_validar_features_detecta_un_valor_fuera_del_dominio() -> None:
+    """El contrato de salida repite las comprobaciones de dominio sobre el resultado."""
+    features = construir_features(_datos_tipados())
+    features.loc[0, "cgpa"] = 42.0
+
+    with pytest.raises(ErrorValidacion, match="fuera_de_rango"):
+        validar_features(features)
+
+
+def test_el_informe_reune_todas_las_violaciones_de_la_fuente(tmp_path: Path) -> None:
+    """Dos problemas en el mismo archivo se reportan juntos, no de uno en uno."""
+    entrada = _escribir_csv(tmp_path, "900,118,4,4.5,4.5,9.65,1,0.92\n310,105,3,3,3,8.1,0,\n")
+
+    with pytest.raises(ErrorValidacion) as error:
+        ejecutar_pipeline(entrada, tmp_path / "salida.parquet")
+
+    reglas = {violacion.regla for violacion in error.value.violaciones}
+    assert reglas == {"fuera_de_rango", "exceso_de_nulos"}

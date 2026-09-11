@@ -99,6 +99,31 @@ datos (la mediana, la media, la desviación) y, calculados antes de particionar,
 información del conjunto de prueba al de entrenamiento. Viven en el `Pipeline` de
 scikit-learn de `4-feat_eng`, que se ajusta solo con *train*.
 
+### Validación de datos e integridad
+
+Las features **no se guardan si los datos no pasan el contrato**. Hay tres puertas de
+calidad, todas antes de escribir el parquet, así que un fallo deja intacto el archivo
+anterior en vez de sustituirlo por datos corruptos:
+
+| Puerta | Qué comprueba |
+|---|---|
+| `ESQUEMA_FUENTE` | la fuente ya tipada: tipos, rangos de `Informacion.txt`, categorías válidas, % de nulos, registros duplicados e integridad entre campos |
+| `ESQUEMA_FEATURES` | lo que se va a persistir: el dominio otra vez y la coherencia de los atributos derivados con su fórmula |
+| `comparar_datasets` | integridad entre la entrada y la salida: ni filas inventadas, ni columnas perdidas, ni valores o nulos que no estaban en el origen |
+
+El motor que aplica los contratos está en `src/data/validacion.py`; los contratos, con las
+constantes que los justifican, en el propio `feature_pipeline.py`. Se recogen **todas** las
+violaciones antes de fallar, y el script termina con código de salida 1 y un informe
+legible:
+
+```console
+$ uv run python src/pipelines/feature_pipeline/feature_pipeline.py --entrada datos_malos.csv
+ERROR Validacion fallida en la fuente tipada: 2 regla(s) incumplida(s)
+  - [gre_score] fuera_de_rango: valores fuera de [0, 340]: [900] (1 fila)
+  - [chance_of_admit] exceso_de_nulos: 33.3% de nulos, maximo admitido 0.0% (1 fila)
+ERROR No se persistieron features: data/04_feature/admisiones_features.parquet no se ha modificado
+```
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
@@ -209,6 +234,8 @@ uv add --group dev plotly
 │   ├── README.md                       # description of src structure
 │   ├── tmp_mock.py                     # example python file
 │   ├── data                            # data extraction, validation, processing, transformation
+│   │   ├── transformaciones.py         # transformaciones reutilizadas por los pipelines
+│   │   └── validacion.py               # motor de validacion: esquemas, reglas e informes
 │   ├── model                           # model training, evaluation, validation, export
 │   ├── inference                       # model prediction, serving, monitoring
 │   └── pipelines                       # orchestration of pipelines
