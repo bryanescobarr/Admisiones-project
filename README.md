@@ -145,6 +145,8 @@ data/04_feature/admisiones_features.parquet
 | `--presupuesto` | segundos de búsqueda, solo con `--modelo automl` |
 | `--proporcion-test` / `--semilla` | partición (0.25 y 42, como en los notebooks) |
 | `--sin-referencias` | mide solo el modelo elegido, sin el dummy ni la heurística |
+| `--particion-estricta` | detiene el entrenamiento también ante una advertencia de deriva |
+| `--chequeos-particion` | ruta del informe de chequeos de la partición |
 | `--features` / `--modelo-salida` / `--metricas` | rutas de entrada y salida |
 
 Salida de una ejecución sobre los datos del repositorio:
@@ -169,6 +171,43 @@ Tres detalles que no son decorativos:
 
 La receta de preprocesamiento está en `src/data/preprocesamiento.py`, y una prueba
 comprueba que reproduce exactamente el pipeline ajustado en el notebook `4-feat_eng`.
+
+### Chequeos de la partición train/test
+
+Entre partir y entrenar hay una puerta: `validar_particion_train_test()`
+(`src/data/particion.py`) comprueba que el modelo no se va a examinar con datos que ya vio y
+que los dos conjuntos representan el mismo problema. Los umbrales son los de la suite
+`train_test_validation` de deepchecks.
+
+| Chequeo | Qué mide | Umbral | Severidad si falla |
+|---|---|---|---|
+| `indices_solapados` | filas presentes en los dos conjuntos | 0 | **error** |
+| `filas_compartidas` | perfiles de prueba que ya estaban en entrenamiento | 5 % | **error** (advertencia por debajo) |
+| `proporcion_de_la_particion` | desviación de la proporción pedida | 5 puntos | advertencia |
+| `tamano_del_conjunto_de_prueba` | ratio test/train y mínimo de filas | 0.01 / 30 filas | advertencia |
+| `deriva_del_objetivo` | Kolmogorov-Smirnov sobre `chance_of_admit` | D ≤ 0.2 | advertencia |
+| `deriva_de_la_variable` | KS por predictor | D ≤ 0.2 | advertencia |
+| `categorias_nuevas_en_prueba` | valores que el modelo nunca vio | 0 | advertencia |
+| `deriva_de_los_nulos` | reparto de datos ausentes | 10 puntos | advertencia |
+| `deriva_multivariante` | AUC de un clasificador que intenta distinguir train de test | ≤ 0.65 | advertencia |
+
+**La fuga detiene el pipeline; la deriva se avisa.** Entrenar con fuga es peor que no
+entrenar, porque produce métricas excelentes en las que alguien va a confiar. La deriva, en
+cambio, aparece por azar en una partición aleatoria de 471 filas, así que se registra y se
+sigue; con `--particion-estricta` cualquier advertencia también detiene el proceso.
+
+El informe se guarda **siempre**, pasen o no los chequeos, en
+`data/08_reporting/chequeos_particion.parquet`:
+
+```text
+                      chequeo           columna severidad  estadistico  umbral
+            indices_solapados                          ok          NaN     NaN
+            filas_compartidas                          ok       0.0000     NaN
+   proporcion_de_la_particion                          ok       0.0005    0.05
+          deriva_del_objetivo   chance_of_admit        ok       0.0615    0.20
+        deriva_de_la_variable              cgpa        ok       0.0689    0.20
+         deriva_multivariante                          ok       0.4804    0.65
+```
 
 ## ✨ Features and Tools
 
@@ -281,6 +320,7 @@ uv add --group dev plotly
 │   ├── tmp_mock.py                     # example python file
 │   ├── data                            # data extraction, validation, processing, transformation
 │   │   ├── transformaciones.py         # transformaciones reutilizadas por los pipelines
+│   │   ├── particion.py                # chequeos de la particion train/test (fuga y deriva)
 │   │   ├── preprocesamiento.py         # pipeline de sklearn: imputacion, encoding y escalado
 │   │   └── validacion.py               # motor de validacion: esquemas, reglas e informes
 │   ├── model                           # model training, evaluation, validation, export
