@@ -216,6 +216,9 @@ def tipar_columnas(datos: pd.DataFrame) -> pd.DataFrame:
     El tipado es también una validación de formato: un `'9'` en `university_rating`, un
     `'2'` en `research` o un `'trescientos'` en `gre_score` no se convierten en nulos sin
     más, se reportan como `ErrorValidacion` con el detalle de los valores culpables.
+
+    Las columnas que no estén presentes se omiten, de modo que la misma función sirve para
+    los datos de entrenamiento y para los de inferencia, a los que les falta el objetivo.
     """
     nulos_antes = datos.isna().sum()
     tipado = datos.copy()
@@ -223,7 +226,11 @@ def tipar_columnas(datos: pd.DataFrame) -> pd.DataFrame:
 
     # las categorias se comprueban ANTES de construir la categorica: al construirla, un
     # valor no declarado se convertiria en nulo y el error quedaria enterrado
-    vistas = set(tipado["university_rating"].dropna().astype("string"))
+    vistas = (
+        set(tipado["university_rating"].dropna().astype("string"))
+        if "university_rating" in tipado.columns
+        else set()
+    )
     intrusas = sorted(vistas - set(CATEGORIAS_RATING))
     if intrusas:
         violaciones.append(
@@ -233,16 +240,16 @@ def tipar_columnas(datos: pd.DataFrame) -> pd.DataFrame:
                 f"valores no declarados {intrusas}, permitidos {CATEGORIAS_RATING}",
             )
         )
-    else:
+    elif "university_rating" in tipado.columns:
         tipado["university_rating"] = pd.Categorical(
             tipado["university_rating"], categories=CATEGORIAS_RATING, ordered=True
         )
 
-    for columna in COLS_ENTERAS:
+    for columna in [c for c in COLS_ENTERAS if c in tipado.columns]:
         tipado[columna] = pd.to_numeric(tipado[columna], errors="coerce").astype("Int64")
-    for columna in COLS_FLOTANTES:
+    for columna in [c for c in COLS_FLOTANTES if c in tipado.columns]:
         tipado[columna] = pd.to_numeric(tipado[columna], errors="coerce").astype("Float64")
-    for columna in COLS_BOOLEANAS:
+    for columna in [c for c in COLS_BOOLEANAS if c in tipado.columns]:
         inesperados = sorted(set(tipado[columna].dropna().unique()) - set(MAPA_BOOLEANO))
         if inesperados:
             violaciones.append(
