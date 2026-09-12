@@ -236,6 +236,24 @@ def predecir_lote(modelo: Pipeline, predictores: pd.DataFrame) -> pd.DataFrame:
     return resultado
 
 
+def predecir_dataframe(modelo: Pipeline, datos: pd.DataFrame) -> pd.DataFrame:
+    """Puntúa una tabla de aspirantes ya cargada en memoria.
+
+    Es el recorrido completo de una fila —separar el contexto, poner en formato, validar y
+    predecir— sin pasar por el disco, de modo que **el script de línea de comandos y la
+    pestaña de lotes de la demo ejecutan exactamente el mismo código**. Si hubiera dos
+    caminos, tarde o temprano darían números distintos para el mismo archivo.
+
+    Devuelve la tabla de entrada con las columnas de predicción añadidas: primero el
+    contexto (identificadores y demás), después los predictores ya tipados y al final la
+    predicción con su interpretación.
+    """
+    predictores, contexto = separar_contexto(datos)
+    predictores = preparar_datos_nuevos(predictores)
+    predicciones = predecir_lote(modelo, predictores)
+    return pd.concat([contexto, predictores, predicciones], axis=1)
+
+
 def resumir_lote(predicciones: pd.DataFrame) -> pd.DataFrame:
     """Distribución de las predicciones por cesta: el resumen que se mira primero.
 
@@ -302,11 +320,7 @@ def ejecutar_pipeline(
     """
     modelo = cargar_modelo(ruta_modelo)
     datos = leer_datos_nuevos(ruta_datos)
-    predictores, contexto = separar_contexto(datos)
-    predictores = preparar_datos_nuevos(predictores)
-
-    predicciones = predecir_lote(modelo, predictores)
-    salida = pd.concat([contexto, predictores, predicciones], axis=1)
+    salida = predecir_dataframe(modelo, datos)
 
     if TARGET in salida.columns:
         objetivo = pd.to_numeric(salida[TARGET], errors="coerce")
@@ -323,7 +337,7 @@ def ejecutar_pipeline(
                 int(comparables.sum()),
             )
 
-    resumen = resumir_lote(predicciones)
+    resumen = resumir_lote(salida)
     logger.info("Distribucion por cesta:\n%s", resumen.round(3).to_string(index=False))
     mostrar_predicciones(salida, filas_a_mostrar)
 
