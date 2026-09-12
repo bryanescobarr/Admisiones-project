@@ -24,9 +24,82 @@ Using the data science project template <https://github.com/JoseRZapata/data-sci
 
 [![Abrir la demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://admisiones-project-cd.streamlit.app/)
 
-Formulario web donde un aspirante introduce su perfil académico y obtiene su probabilidad
-estimada de admisión, junto con la clasificación de esa universidad como opción **segura**,
-**probable** o **ambiciosa**, y el desglose de cuánto aportó cada dato de su perfil.
+La demo tiene **dos pestañas**, sobre el mismo modelo:
+
+| Pestaña | Qué hace |
+|---|---|
+| 🎯 **Predicción individual** | un aspirante introduce su perfil y obtiene su probabilidad, su cesta (**segura**, **probable** o **ambiciosa**) y el desglose de cuánto aportó cada dato |
+| 📂 **Procesamiento por lotes** | se sube un archivo con varios aspirantes y se obtienen todas las predicciones juntas, con resumen por cesta, tabla y descarga en CSV |
+
+### Cómo usar el procesamiento por lotes
+
+1. Abre la pestaña **📂 Procesamiento por lotes**.
+2. Pulsa **⬇️ Descargar archivo de ejemplo** (o toma `examples/aspirantes_ejemplo.csv`) para
+   ver el formato esperado.
+3. Sube tu archivo `.csv` o `.parquet` con una fila por aspirante.
+4. Revisa el resumen —cuántos aspirantes, probabilidad media y cuántos con advertencia—, el
+   reparto por cesta y la tabla de resultados.
+5. Pulsa **⬇️ Descargar predicciones (CSV)**.
+
+**Qué debe tener el archivo:** las siete columnas del perfil (`GRE Score`, `TOEFL Score`,
+`University Rating`, `SOP`, `LOR`, `CGPA`, `Research`), con los nombres del dataset original
+o en minúsculas con guion bajo. Puedes **dejar celdas vacías o escribir `n/a`** —el modelo
+imputa, igual que el «No lo sé» del formulario— siempre que cada fila tenga al menos 4 de
+los 7 datos. Las **columnas de más se conservan**: si incluyes un `id` o el nombre del
+aspirante, vuelven en el archivo de resultados.
+
+A la salida se añaden cinco columnas: `prediccion`, `cesta`, `limite_inferior`,
+`limite_superior` y `advertencia`.
+
+Un valor fuera del dominio documentado —un GRE de 900, un rating de 9— **rechaza el archivo
+entero**, con la lista de reglas incumplidas y sin tumbar la aplicación:
+
+```text
+No se pudo procesar el archivo. 1 regla(s) incumplida(s):
+- [gre_score] fuera_de_rango: valores fuera de [0, 340]: [900] (1 fila)
+```
+
+**Dónde vive la lógica.** La pestaña no valida, no predice y no clasifica: encadena las
+funciones de `src/pipelines/inference_pipeline/inference_pipeline.py` —`leer_datos_nuevos`,
+`separar_contexto`, `preparar_datos_nuevos`, `predecir_lote` y `resumir_lote`—, las mismas
+que ejecuta el script de línea de comandos. El archivo subido se vuelca a un temporal porque
+`leer_datos_nuevos()` recibe una ruta, y **no se escribe nada en `data/`**: el disco de
+Streamlit Cloud es efímero y la salida se entrega por descarga.
+
+Para lotes grandes o automatizados, el mismo trabajo desde la terminal:
+
+```bash
+uv run python src/pipelines/inference_pipeline/inference_pipeline.py \
+    --modelo data/06_models/modelo_produccion.joblib \
+    --datos examples/aspirantes_ejemplo.csv \
+    --salida predicciones.csv --mostrar 10
+```
+
+### Evidencia de funcionamiento
+
+En `examples/` están la entrada y la salida reales del lote, versionadas y generadas con el
+modelo de servicio:
+
+| Archivo | Qué es |
+|---|---|
+| `examples/aspirantes_ejemplo.csv` | 10 aspirantes, tres de ellos con datos incompletos |
+| `examples/predicciones_ejemplo.csv` | lo que produce la demo con ese archivo |
+| `examples/README.md` | qué demuestra cada fila y cómo reproducirlo |
+
+Resultado de ese lote: **10 aspirantes procesados**, probabilidad media **75 %**, reparto
+2 `segura` / 5 `probable` / 3 `ambiciosa` y **1 predicción marcada con advertencia** (el
+aspirante `A-005`). Las tres filas con datos ausentes —`A-006` sin TOEFL, `A-007` sin cartas
+y `A-009` con la celda vacía— se procesan igual, porque el pipeline del modelo imputa con la
+mediana aprendida en entrenamiento.
+
+Quince pruebas automáticas ejercitan la aplicación real con `streamlit.testing.v1.AppTest`,
+incluida una que **sube el archivo de ejemplo y comprueba que lo que se descargaría es
+idéntico a `examples/predicciones_ejemplo.csv`**, y tres que suben archivos inválidos y
+verifican que la app sigue en pie:
+
+```bash
+uv run pytest tests/test_app.py -q   # 18 passed
+```
 
 ### Ejecutar en local
 
@@ -35,8 +108,8 @@ uv sync --all-extras --dev
 uv run streamlit run app.py
 ```
 
-Se abre en <http://localhost:8501>. No hace falta ejecutar ningún notebook ni ningún
-pipeline antes: el modelo que sirve la demo ya está versionado en
+Se abre en <http://localhost:8501>, con las dos pestañas. No hace falta ejecutar ningún
+notebook ni ningún pipeline antes: el modelo que sirve la demo ya está versionado en
 `data/06_models/modelo_produccion.joblib`.
 
 Para verificar que todo funciona sin abrir el navegador:
@@ -109,7 +182,9 @@ que necesita scikit-learn.
 
 | Archivo | Qué hace |
 |---|---|
-| `app.py` | interfaz: formulario, resultados, gráfico de aportes, advertencias |
+| `app.py` | interfaz: las dos pestañas, resultados, gráfico de aportes, advertencias |
+| `src/pipelines/inference_pipeline/inference_pipeline.py` | la inferencia por lotes: **la pestaña y el script de línea de comandos ejecutan el mismo código** |
+| `examples/` | archivos de entrada y salida de ejemplo del lote |
 | `src/inference/prediccion.py` | lógica: cargar el modelo de servicio, predecir, clasificar en cestas, explicar con SHAP |
 | `data/06_models/modelo_produccion.joblib` | el artefacto que se sirve, generado por `train_pipeline.py` |
 | `notebooks/7-deploy/08.Demo-de-la-aplicacion-BER-2026-08-21.ipynb` | documentación de la demo y del despliegue |
@@ -434,6 +509,7 @@ uv add --group dev plotly
 │   ├── 08_reporting                    # reports, results, etc
 │   └── README.md                       # description of the data structure
 ├── docs                                # documentation for your project
+├── examples                            # entrada y salida de ejemplo del procesamiento por lotes
 ├── .editorconfig                       # editor configuration
 ├── .github                             # github configuration
 │   ├── dependabot.md                   # github action to update dependencies
