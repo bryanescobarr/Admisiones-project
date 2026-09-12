@@ -35,13 +35,61 @@ uv sync --all-extras --dev
 uv run streamlit run app.py
 ```
 
-Se abre en <http://localhost:8501>. No hace falta ejecutar ningún notebook antes: el modelo
-entrenado ya está versionado en `data/06_models/modelo_final_automl.joblib`.
+Se abre en <http://localhost:8501>. No hace falta ejecutar ningún notebook ni ningún
+pipeline antes: el modelo que sirve la demo ya está versionado en
+`data/06_models/modelo_produccion.joblib`.
 
 Para verificar que todo funciona sin abrir el navegador:
 
 ```bash
 uv run pytest tests/test_app.py tests/test_prediccion.py -v
+```
+
+### Qué modelo sirve la demo
+
+`data/06_models/modelo_produccion.joblib`, el artefacto que produce el **training
+pipeline**. Antes se servía el `.joblib` que se exportó a mano desde el notebook
+`06.Seleccion-de-modelo-AutoML`; ahora la demo sirve lo que genera la cadena reproducible
+—feature pipeline, chequeos de partición, entrenamiento y validación—, no una pieza suelta.
+Los artefactos del POC siguen versionados como referencia histórica.
+
+| | POC (`modelo_final_automl`) | Servicio (`modelo_produccion`) |
+|---|---|---|
+| MAE en prueba | 0.0476 | **0.0467** |
+| Acierto de cesta | 80.5 % | **84.7 %** |
+| Predicción mínima | 0.447 | 0.4066 |
+| Cómo se genera | a mano, desde un notebook | un comando, reproducible |
+| Chequeos de partición y diagnóstico de generalización | no | sí |
+
+#### Cómo regenerarlo
+
+```bash
+uv run python src/pipelines/feature_pipeline/feature_pipeline.py
+uv run python src/pipelines/training_pipeline/train_pipeline.py \
+    --modelo-salida data/06_models/modelo_produccion.joblib
+git add -f data/06_models/modelo_produccion.joblib
+```
+
+El `git add -f` es necesario porque `data/**` está en `.gitignore`, y **Streamlit Cloud solo
+puede servir lo que esté versionado**. Es la misma convención que ya usaban los `.joblib`
+del notebook. El artefacto ocupa unos 4.2 MiB.
+
+Si se regenera con otro entorno, hay que **actualizar `requirements.txt` en el mismo
+commit**: las versiones fijadas ahí son las que serializaron el artefacto, y un desajuste de
+`scikit-learn`, `numpy` o `joblib` impide deserializarlo en el despliegue.
+
+#### De dónde salen las cifras que muestra la demo
+
+`MAE_MODELO` se lee de `data/08_reporting/metricas_training_pipeline.parquet`, el informe
+que escribe el propio training pipeline, en la fila del modelo servido. Ese informe **no se
+versiona** (la regla es versionar solo el artefacto de servicio), así que en el despliegue
+`src/inference/prediccion.py` recurre al valor medido en la ejecución que generó el
+`.joblib`. Lo mismo con `PREDICCION_MINIMA`, que además todavía no es una columna del
+informe. Una prueba recalcula ambas cifras desde los datos crudos versionados, de modo que
+no puedan quedarse describiendo a otro modelo:
+
+```bash
+uv run pytest tests/test_prediccion.py -q
 ```
 
 ### Publicar en Streamlit Community Cloud
@@ -62,7 +110,8 @@ que necesita scikit-learn.
 | Archivo | Qué hace |
 |---|---|
 | `app.py` | interfaz: formulario, resultados, gráfico de aportes, advertencias |
-| `src/inference/prediccion.py` | lógica: cargar el modelo, predecir, clasificar en cestas, explicar con SHAP |
+| `src/inference/prediccion.py` | lógica: cargar el modelo de servicio, predecir, clasificar en cestas, explicar con SHAP |
+| `data/06_models/modelo_produccion.joblib` | el artefacto que se sirve, generado por `train_pipeline.py` |
 | `notebooks/7-deploy/08.Demo-de-la-aplicacion-BER-2026-08-21.ipynb` | documentación de la demo y del despliegue |
 
 La lógica vive fuera de la interfaz para poder probarla: una interfaz rota se ve, una regla
