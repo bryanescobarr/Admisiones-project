@@ -24,9 +24,54 @@ Using the data science project template <https://github.com/JoseRZapata/data-sci
 
 [![Abrir la demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://admisiones-project-cd.streamlit.app/)
 
-Formulario web donde un aspirante introduce su perfil académico y obtiene su probabilidad
-estimada de admisión, junto con la clasificación de esa universidad como opción **segura**,
-**probable** o **ambiciosa**, y el desglose de cuánto aportó cada dato de su perfil.
+La demo tiene **dos pestañas**:
+
+| Pestaña | Qué hace |
+|---|---|
+| 🎯 **Predicción individual** | formulario donde un aspirante introduce su perfil y obtiene su probabilidad, su cesta (**segura**, **probable** o **ambiciosa**) y el desglose de cuánto aportó cada dato |
+| 📂 **Procesamiento por lotes** | se sube un archivo con varios aspirantes y se obtienen todas las predicciones juntas, con resumen, tabla y descarga en CSV |
+
+### Cómo usar el procesamiento por lotes
+
+1. Abre la pestaña **📂 Procesamiento por lotes**.
+2. Pulsa **⬇️ Descargar archivo de ejemplo** (o toma `ejemplos/aspirantes_ejemplo.csv`) para
+   ver el formato esperado.
+3. Sube tu archivo `.csv` o `.parquet` con una fila por aspirante.
+4. Revisa el resumen —cuántos aspirantes, probabilidad media, cuántos con advertencia—, la
+   distribución por cesta y la tabla de resultados.
+5. Pulsa **⬇️ Descargar predicciones (CSV)**.
+
+**Qué debe tener el archivo:** las siete columnas del perfil (`GRE Score`, `TOEFL Score`,
+`University Rating`, `SOP`, `LOR`, `CGPA`, `Research`), con los nombres del dataset original
+o en minúsculas con guion bajo. Puedes **dejar celdas vacías o escribir `n/a`** —el modelo
+imputa, igual que el «No lo sé» del formulario— siempre que cada fila tenga al menos 4 de
+los 7 datos. Las **columnas de más se conservan**: si incluyes un `id`, vuelve en el archivo
+de resultados. Límite de la demo: 5000 filas; para lotes mayores está el
+[inference pipeline](#-inference-pipeline).
+
+Un valor fuera del dominio documentado —un GRE de 900, un rating de 9— **rechaza el archivo
+entero** con el detalle de la fila y la columna, en vez de generar una predicción que nadie
+debería usar.
+
+### Evidencia de funcionamiento
+
+En `ejemplos/` están la entrada y la salida reales del lote, versionadas:
+
+| Archivo | Qué es |
+|---|---|
+| `ejemplos/aspirantes_ejemplo.csv` | 8 aspirantes, dos de ellos con datos incompletos |
+| `ejemplos/predicciones_ejemplo.csv` | lo que produce la demo con ese archivo |
+| `ejemplos/README.md` | qué demuestra cada fila y cómo reproducirlo |
+
+Resultado de ese lote: **8 aspirantes procesados**, probabilidad media **74 %**, reparto
+2 `segura` / 3 `probable` / 3 `ambiciosa` y **1 predicción marcada con advertencia** (el
+aspirante `A-005`, que cae por debajo del umbral de 0.55). Las dos filas con datos ausentes
+—`A-006` sin TOEFL y `A-007` sin cartas— se procesan igual, porque el pipeline del modelo
+imputa con la mediana aprendida en entrenamiento.
+
+Nueve pruebas automáticas cubren la demo de punta a punta, incluidas cuatro que **suben el
+archivo de ejemplo** a la aplicación y comprueban las métricas, la tabla, el botón de
+descarga y el aviso del tramo bajo (`tests/test_app.py`).
 
 ### Ejecutar en local
 
@@ -52,8 +97,9 @@ uv run pytest tests/test_app.py tests/test_prediccion.py -v
    y en *Advanced settings* elegir **Python 3.12**.
 4. **Deploy**.
 
-El repositorio ya trae lo que necesita el despliegue: `requirements.txt` con las versiones
-**fijadas** (el `.joblib` se serializó con `scikit-learn 1.9.0` y `pandas 3.0.5`, y otras
+Una vez publicada, **cada push a `main` la vuelve a desplegar sola**: no hay que repetir
+estos pasos. El repositorio ya trae lo que necesita el despliegue: `requirements.txt` con
+las versiones **fijadas** (el `.joblib` se serializó con `scikit-learn 1.9.0` y `pandas 3.0.5`, y otras
 versiones pueden no deserializarlo) y `packages.txt` con `libgomp1`, la librería de OpenMP
 que necesita scikit-learn.
 
@@ -61,12 +107,16 @@ que necesita scikit-learn.
 
 | Archivo | Qué hace |
 |---|---|
-| `app.py` | interfaz: formulario, resultados, gráfico de aportes, advertencias |
-| `src/inference/prediccion.py` | lógica: cargar el modelo, predecir, clasificar en cestas, explicar con SHAP |
+| `app.py` | interfaz: las dos pestañas, resultados, gráfico de aportes, advertencias |
+| `src/inference/prediccion.py` | lógica individual: cargar el modelo, predecir, clasificar en cestas, explicar con SHAP |
+| `src/inference/lote.py` | lógica del lote: leer el archivo subido, puntuarlo y prepararlo para descargar |
+| `src/pipelines/inference_pipeline/inference_pipeline.py` | la inferencia de verdad: **la pestaña de lotes y el script de línea de comandos ejecutan el mismo código** |
+| `ejemplos/` | archivos de entrada y salida de ejemplo |
 | `notebooks/7-deploy/08.Demo-de-la-aplicacion-BER-2026-08-21.ipynb` | documentación de la demo y del despliegue |
 
 La lógica vive fuera de la interfaz para poder probarla: una interfaz rota se ve, una regla
-de negocio mal escrita no. La demo admite campos vacíos (el pipeline imputa), muestra un
+de negocio mal escrita no. Y el lote no reimplementa nada: si hubiera dos caminos de
+inferencia, tarde o temprano darían números distintos para el mismo aspirante. La demo admite campos vacíos (el pipeline imputa), muestra un
 rango de referencia junto a la cifra y **avisa explícitamente** cuando la predicción cae en
 el tramo donde el modelo tiende a ser optimista.
 
@@ -385,6 +435,7 @@ uv add --group dev plotly
 │   ├── 08_reporting                    # reports, results, etc
 │   └── README.md                       # description of the data structure
 ├── docs                                # documentation for your project
+├── ejemplos                            # archivos de ejemplo de entrada y salida de la demo
 ├── .editorconfig                       # editor configuration
 ├── .github                             # github configuration
 │   ├── dependabot.md                   # github action to update dependencies
