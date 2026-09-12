@@ -253,6 +253,58 @@ informe la nombra en vez de esconderla.
 La validación es **reproducible**: el validador, los pliegues, las repeticiones y la semilla
 se guardan como columnas del propio informe, así que el artefacto dice cómo se produjo.
 
+## 🔮 Inference pipeline
+
+Tercera etapa FTI: carga el modelo entrenado, lee un archivo de aspirantes nuevos, les
+aplica las mismas transformaciones del entrenamiento y guarda las predicciones.
+
+```bash
+uv run python src/pipelines/inference_pipeline/inference_pipeline.py --datos aspirantes.csv --mostrar 5
+```
+
+```text
+data/06_models/modelo_training_pipeline.joblib + aspirantes.csv
+  -> data/07_model_output/predicciones.parquet
+```
+
+| Opción | Para qué sirve |
+|---|---|
+| `--modelo` | artefacto a cargar (por defecto, el del training pipeline) |
+| `--datos` | CSV o parquet de aspirantes; por defecto, el archivo crudo del proyecto |
+| `--salida` | archivo de predicciones, `.parquet` o `.csv` |
+| `--mostrar N` | escribe las primeras N predicciones en el log |
+| `--sin-guardar` | inspecciona el lote sin escribir nada |
+
+**Aquí no se reimplementa ninguna transformación.** El `.joblib` guarda el `Pipeline`
+completo con los parámetros aprendidos en entrenamiento —la mediana de cada columna, la
+media y la desviación del escalado, el mapeo del encoder—, así que `modelo.predict()`
+aplica esa misma secuencia. Lo que sí hace el script antes es la **puesta en formato**:
+normaliza los nombres (`'LOR '`), unifica los `'n/a'`, tipa y valida contra el dominio
+documentado, **sin exigir la columna objetivo** (un aspirante que aún no fue admitido no la
+tiene) y **permitiendo perfiles repetidos** (dos aspirantes distintos pueden coincidir).
+
+Cada fila sale con su cesta, su rango de ±1 MAE y la advertencia del tramo bajo, con la
+misma lógica que la demo (`src/inference/prediccion.py`); las columnas que no entran al
+modelo —un `id`, la universidad— vuelven a salir en el archivo de predicciones.
+
+```console
+$ uv run python src/pipelines/inference_pipeline/inference_pipeline.py --datos aspirantes.csv --mostrar 2
+INFO Modelo cargado de data/06_models/modelo_training_pipeline.joblib (4324.2 KB): pasos ['preparacion', 'modelo'], estimador ExtraTreesRegressor
+INFO Leidas 2 filas x 8 columnas de aspirantes.csv
+INFO Datos preparados: 2 filas, 1 valores ausentes que el modelo imputara
+INFO Predicciones generadas: 2 filas, media 0.727, rango [0.599, 0.855], +-0.0476 de MAE
+INFO Distribucion por cesta:
+    cesta  n  porcentaje  prediccion_media
+ambiciosa  1        50.0             0.599
+   segura  1        50.0             0.855
+ prediccion     cesta  limite_inferior  limite_superior  advertencia
+     0.8551    segura           0.8075           0.9027        False
+     0.5989 ambiciosa           0.5513           0.6465        False
+```
+
+Un dato imposible —un GRE de 900, un rating 9, un perfil casi vacío— detiene el lote con un
+informe y código de salida 1, **sin escribir ningún archivo de predicciones**.
+
 ## ✨ Features and Tools
 
 Information about all the features and tools used in this project: <https://joserzapata.github.io/data-science-project-template/#features-and-tools>
@@ -377,6 +429,7 @@ uv add --group dev plotly
 │       ├── training_pipeline           # transforms features and labels into a model
 │       │   └── train_pipeline.py       # features -> modelo entrenado + metricas
 │       └── inference_pipeline          # takes features and a trained model for predictions
+│           └── inference_pipeline.py  # modelo + aspirantes -> predicciones en 07_model_output
 ├── tests                               # test code for your project
 │   ├── test_mock.py                    # example test file
 │   ├── data                            # tests for data module
