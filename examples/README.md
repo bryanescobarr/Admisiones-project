@@ -11,6 +11,12 @@ probarla sin tener que fabricarse un archivo antes.
 Están aquí, y no en `data/`, porque `data/**` está en `.gitignore` y estos archivos tienen
 que viajar al repositorio: la demo los sirve como descarga.
 
+`predicciones_ejemplo.csv` se genera **en las mismas condiciones que el despliegue**, es
+decir, sin el informe de métricas del training pipeline delante: ese informe tampoco se
+versiona, así que en Streamlit Cloud `MAE_MODELO` toma el valor medido de respaldo. De ahí
+salen los límites del intervalo, que son `predicción ± MAE`; si se regenera el archivo en
+local con el informe presente, esas dos columnas cambian en la quinta cifra decimal.
+
 ## Cómo usarlos
 
 1. Abre la demo (<https://admisiones-project-cd.streamlit.app/>) y ve a la pestaña

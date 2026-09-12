@@ -18,6 +18,11 @@ CABECERA = "id,GRE Score,TOEFL Score,University Rating,SOP,LOR ,CGPA,Research"
 FILA_CON_GRE_IMPOSIBLE = "A-1,900,113,4,4.5,4.5,9.1,1"
 FILA_SIN_PERFIL = "A-2,n/a,n/a,n/a,n/a,3,8.1,n/a"
 
+# los limites son prediccion +- MAE, y el MAE sale del informe del training pipeline cuando
+# esta disponible o del valor medido cuando no; la diferencia entre ambos es de 3e-5
+COLUMNAS_CON_MARGEN = ["limite_inferior", "limite_superior"]
+TOLERANCIA_INTERVALO = 1e-4
+
 
 def _abrir_demo() -> AppTest:
     """Ejecuta app.py en el entorno de pruebas de Streamlit."""
@@ -137,12 +142,29 @@ def test_lo_que_se_descarga_coincide_con_el_ejemplo_versionado() -> None:
 
     El botón de descarga serializa esta misma tabla con `to_csv`, así que comparar el CSV
     resultante con `examples/predicciones_ejemplo.csv` comprueba lo que se descargaría.
+
+    La probabilidad y la cesta se comparan **exactas**: son la decisión del modelo. Los dos
+    límites del intervalo llevan una tolerancia de `TOLERANCIA_INTERVALO` porque son
+    `predicción ± MAE`, y el MAE se lee del informe del training pipeline cuando está y del
+    valor medido cuando no —el caso del despliegue y de CI, donde `data/**` no viaja—. La
+    diferencia entre ambos caminos es de 3e-5; cualquier cambio real de comportamiento sería
+    órdenes de magnitud mayor.
     """
     demo = _subir(_abrir_demo(), ARCHIVO_EJEMPLO.read_bytes(), ARCHIVO_EJEMPLO.name)
 
     descargado = pd.read_csv(io.StringIO(demo.dataframe[1].value.to_csv(index=False)))
+    esperado = pd.read_csv(ARCHIVO_PREDICCIONES)
 
-    pd.testing.assert_frame_equal(descargado, pd.read_csv(ARCHIVO_PREDICCIONES))
+    assert list(descargado.columns) == list(esperado.columns)
+    pd.testing.assert_frame_equal(
+        descargado.drop(columns=COLUMNAS_CON_MARGEN), esperado.drop(columns=COLUMNAS_CON_MARGEN)
+    )
+    pd.testing.assert_frame_equal(
+        descargado[COLUMNAS_CON_MARGEN],
+        esperado[COLUMNAS_CON_MARGEN],
+        check_exact=False,
+        atol=TOLERANCIA_INTERVALO,
+    )
 
 
 def test_el_resumen_por_cesta_reparte_todo_el_lote() -> None:
