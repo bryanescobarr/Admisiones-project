@@ -70,7 +70,7 @@ Para lotes grandes o automatizados, el mismo trabajo desde la terminal:
 
 ```bash
 uv run python src/pipelines/inference_pipeline/inference_pipeline.py \
-    --modelo data/06_models/modelo_produccion.joblib \
+    --modelo models/modelo_produccion.joblib \
     --datos examples/aspirantes_ejemplo.csv \
     --salida predicciones.csv --mostrar 10
 ```
@@ -110,7 +110,7 @@ uv run streamlit run app.py
 
 Se abre en <http://localhost:8501>, con las dos pestañas. No hace falta ejecutar ningún
 notebook ni ningún pipeline antes: el modelo que sirve la demo ya está versionado en
-`data/06_models/modelo_produccion.joblib`.
+`models/modelo_produccion.joblib`.
 
 Para verificar que todo funciona sin abrir el navegador:
 
@@ -120,7 +120,7 @@ uv run pytest tests/test_app.py tests/test_prediccion.py -v
 
 ### Qué modelo sirve la demo
 
-`data/06_models/modelo_produccion.joblib`, el artefacto que produce el **training
+`models/modelo_produccion.joblib`, el artefacto que produce el **training
 pipeline**. Antes se servía el `.joblib` que se exportó a mano desde el notebook
 `06.Seleccion-de-modelo-AutoML`; ahora la demo sirve lo que genera la cadena reproducible
 —feature pipeline, chequeos de partición, entrenamiento y validación—, no una pieza suelta.
@@ -139,13 +139,14 @@ Los artefactos del POC siguen versionados como referencia histórica.
 ```bash
 uv run python src/pipelines/feature_pipeline/feature_pipeline.py
 uv run python src/pipelines/training_pipeline/train_pipeline.py \
-    --modelo-salida data/06_models/modelo_produccion.joblib
-git add -f data/06_models/modelo_produccion.joblib
+    --modelo-salida models/modelo_produccion.joblib
+git add models/modelo_produccion.joblib
 ```
 
-El `git add -f` es necesario porque `data/**` está en `.gitignore`, y **Streamlit Cloud solo
-puede servir lo que esté versionado**. Es la misma convención que ya usaban los `.joblib`
-del notebook. El artefacto ocupa unos 4.2 MiB.
+El artefacto vive en `models/` —la carpeta que la estructura del proyecto reserva para los
+modelos finales— y no bajo `data/`, que está entero en `.gitignore`. Así basta un `git add`
+normal, sin `-f`, y **Streamlit Cloud puede servirlo**, porque solo sirve lo que está
+versionado. El artefacto ocupa unos 4.2 MiB.
 
 Si se regenera con otro entorno, hay que **actualizar `requirements.txt` en el mismo
 commit**: las versiones fijadas ahí son las que serializaron el artefacto, y un desajuste de
@@ -186,7 +187,7 @@ que necesita scikit-learn.
 | `src/pipelines/inference_pipeline/inference_pipeline.py` | la inferencia por lotes: **la pestaña y el script de línea de comandos ejecutan el mismo código** |
 | `examples/` | archivos de entrada y salida de ejemplo del lote |
 | `src/inference/prediccion.py` | lógica: cargar el modelo de servicio, predecir, clasificar en cestas, explicar con SHAP |
-| `data/06_models/modelo_produccion.joblib` | el artefacto que se sirve, generado por `train_pipeline.py` |
+| `models/modelo_produccion.joblib` | el artefacto que se sirve, generado por `train_pipeline.py` |
 | `notebooks/7-deploy/08.Demo-de-la-aplicacion-BER-2026-08-21.ipynb` | documentación de la demo y del despliegue |
 
 La lógica vive fuera de la interfaz para poder probarla: una interfaz rota se ve, una regla
@@ -522,6 +523,7 @@ uv add --group dev plotly
 ├── .gitignore                          # files to ignore in git
 ├── Makefile                            # useful commands to setup environment, run tests, etc.
 ├── models                              # store final models
+│   └── modelo_produccion.joblib        # el artefacto que sirve la demo
 ├── notebooks
 │   ├── 1-data                          # data extraction and cleaning
 │   ├── 2-exploration                   # exploratory data analysis (EDA)
