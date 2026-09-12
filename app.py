@@ -192,7 +192,7 @@ aspirantes reales. El modelo se equivoca en promedio **{MAE_MODELO:.1%}** en dat
 vio, así que trátalo como una orientación, no como un veredicto.
 
 **Para qué sirve de verdad.** Acierta la clasificación en segura / probable / ambiciosa el
-**80 %** de las veces, y nunca confundió una opción ambiciosa con una segura al evaluarlo.
+**85 %** de las veces, y nunca confundió una opción ambiciosa con una segura al evaluarlo.
 Es más fiable **ordenando** tus opciones que dando la cifra exacta.
 
 **Sus límites, dichos claramente:**
@@ -210,6 +210,7 @@ universidad.
     )
 
 st.caption(
-    "Modelo: Extra Trees sobre 471 perfiles · MAE 0.0476 · "
+    f"Modelo: Extra Trees sobre 471 perfiles · MAE {MAE_MODELO:.4f} · "
+    "generado por `train_pipeline.py` · "
     "[Código y notebooks](https://github.com/bryanescobarr/Admisiones-project)"
 )
