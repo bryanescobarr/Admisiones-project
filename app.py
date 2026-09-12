@@ -18,6 +18,17 @@ from sklearn.pipeline import Pipeline
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
+from data.validacion import ErrorValidacion  # noqa: E402
+from inference.lote import (  # noqa: E402
+    ARCHIVO_EJEMPLO_ENTRADA,
+    MAX_FILAS_LOTE,
+    a_csv,
+    columnas_de_prediccion,
+    ejemplo_de_entrada,
+    leer_tabla_subida,
+    procesar_lote,
+    resumen_del_lote,
+)
 from inference.prediccion import (  # noqa: E402
     ETIQUETAS_CESTA,
     MAE_MODELO,
@@ -35,6 +46,17 @@ from inference.prediccion import (  # noqa: E402
 st.set_page_config(
     page_title="Predicción de admisión a posgrado", page_icon="🎓", layout="centered"
 )
+
+# columnas que debe traer un archivo de lote, con su dominio documentado en Informacion.txt
+COLUMNAS_ESPERADAS_LOTE = [
+    ("GRE Score", "260 a 340"),
+    ("TOEFL Score", "0 a 120"),
+    ("University Rating", "1 a 5"),
+    ("SOP", "1 a 5"),
+    ("LOR", "1 a 5"),
+    ("CGPA", "0 a 10"),
+    ("Research", "0 o 1"),
+]
 
 COLORES_CESTA = {"segura": "🟢", "probable": "🟡", "ambiciosa": "🔴"}
 DESCRIPCION_CESTA = {
@@ -76,138 +98,231 @@ except FileNotFoundError as error:
     st.error(str(error))
     st.stop()
 
-with st.form("perfil"):
-    st.subheader("Tu perfil académico")
-    st.caption(
-        "Si te falta algún dato, marca «No lo sé»: el modelo trabaja igual con la información que tengas."
-    )
+pestana_individual, pestana_lotes = st.tabs(
+    ["🎯 Predicción individual", "📂 Procesamiento por lotes"]
+)
 
-    gre = campo_con_desconocido(
-        "Puntaje GRE",
-        "Graduate Record Examination, entre 260 y 340.",
-        lambda etiqueta, disabled, help: st.slider(
-            etiqueta, 260, 340, 316, disabled=disabled, help=help
-        ),
-        "gre",
-    )
-    toefl = campo_con_desconocido(
-        "Puntaje TOEFL",
-        "Examen de inglés, entre 0 y 120.",
-        lambda etiqueta, disabled, help: st.slider(
-            etiqueta, 0, 120, 107, disabled=disabled, help=help
-        ),
-        "toefl",
-    )
-    cgpa = campo_con_desconocido(
-        "Promedio acumulado (CGPA)",
-        "Promedio de tu pregrado sobre 10.",
-        lambda etiqueta, disabled, help: st.slider(
-            etiqueta, 0.0, 10.0, 8.6, 0.01, disabled=disabled, help=help
-        ),
-        "cgpa",
-    )
-
-    columna_izquierda, columna_derecha = st.columns(2)
-    with columna_izquierda:
-        rating = st.select_slider(
-            "Calificación de tu universidad de origen",
-            options=[1, 2, 3, 4, 5],
-            value=3,
-            help="1 = menos reconocida, 5 = más reconocida.",
-        )
-        sop = st.slider("Fuerza de tu carta de intención (SOP)", 1.0, 5.0, 3.5, 0.5)
-    with columna_derecha:
-        research = st.radio(
-            "¿Tienes experiencia en investigación?", ["Sí", "No"], index=0, horizontal=True
-        )
-        lor = st.slider("Fuerza de tus cartas de recomendación (LOR)", 1.0, 5.0, 3.5, 0.5)
-
-    enviado = st.form_submit_button(
-        "Calcular mi probabilidad", type="primary", use_container_width=True
-    )
-
-if enviado:
-    datos = {
-        "gre_score": gre,
-        "toefl_score": toefl,
-        "university_rating": float(rating),
-        "sop": sop,
-        "lor": lor,
-        "cgpa": cgpa,
-        "research": 1.0 if research == "Sí" else 0.0,
-    }
-    probabilidad = predecir(modelo, datos)
-    cesta = clasificar_cesta(probabilidad)
-    limite_inferior, limite_superior = intervalo_estimado(probabilidad)
-
-    st.divider()
-    columna_numero, columna_cesta = st.columns([1, 2])
-    with columna_numero:
-        st.metric("Probabilidad estimada", f"{probabilidad:.0%}")
-        st.caption(f"Rango de referencia: {limite_inferior:.0%} a {limite_superior:.0%}")
-    with columna_cesta:
-        st.markdown(f"### {COLORES_CESTA[cesta]} Opción {cesta}")
-        st.write(DESCRIPCION_CESTA[cesta])
-
-    if probabilidad < UMBRAL_ADVERTENCIA:
-        st.warning(
-            "**Toma este número con precaución.** En perfiles como el tuyo el modelo tiende a ser "
-            f"optimista: casi no vio ejemplos por debajo de {PREDICCION_MINIMA:.0%} al entrenarse, y su "
-            "error se duplica en este tramo. Tu probabilidad real podría ser menor."
+with pestana_individual:
+    with st.form("perfil"):
+        st.subheader("Tu perfil académico")
+        st.caption(
+            "Si te falta algún dato, marca «No lo sé»: el modelo trabaja igual con la información que tengas."
         )
 
-    st.subheader("¿Por qué este resultado?")
-    st.caption(
-        f"El modelo parte de {valor_base:.0%}, que es la probabilidad media de todos los aspirantes, "
-        "y suma o resta según tu perfil."
-    )
+        gre = campo_con_desconocido(
+            "Puntaje GRE",
+            "Graduate Record Examination, entre 260 y 340.",
+            lambda etiqueta, disabled, help: st.slider(
+                etiqueta, 260, 340, 316, disabled=disabled, help=help
+            ),
+            "gre",
+        )
+        toefl = campo_con_desconocido(
+            "Puntaje TOEFL",
+            "Examen de inglés, entre 0 y 120.",
+            lambda etiqueta, disabled, help: st.slider(
+                etiqueta, 0, 120, 107, disabled=disabled, help=help
+            ),
+            "toefl",
+        )
+        cgpa = campo_con_desconocido(
+            "Promedio acumulado (CGPA)",
+            "Promedio de tu pregrado sobre 10.",
+            lambda etiqueta, disabled, help: st.slider(
+                etiqueta, 0.0, 10.0, 8.6, 0.01, disabled=disabled, help=help
+            ),
+            "cgpa",
+        )
 
-    aportes = contribuciones(modelo, datos)
-    aportes.index = [NOMBRES_LEGIBLES.get(nombre, nombre) for nombre in aportes.index]
+        columna_izquierda, columna_derecha = st.columns(2)
+        with columna_izquierda:
+            rating = st.select_slider(
+                "Calificación de tu universidad de origen",
+                options=[1, 2, 3, 4, 5],
+                value=3,
+                help="1 = menos reconocida, 5 = más reconocida.",
+            )
+            sop = st.slider("Fuerza de tu carta de intención (SOP)", 1.0, 5.0, 3.5, 0.5)
+        with columna_derecha:
+            research = st.radio(
+                "¿Tienes experiencia en investigación?", ["Sí", "No"], index=0, horizontal=True
+            )
+            lor = st.slider("Fuerza de tus cartas de recomendación (LOR)", 1.0, 5.0, 3.5, 0.5)
 
-    figura, eje = plt.subplots(figsize=(7, 3.2))
-    colores = ["tab:green" if valor >= 0 else "tab:red" for valor in aportes.to_numpy()[::-1]]
-    eje.barh(aportes.index[::-1], aportes.to_numpy()[::-1], color=colores)
-    eje.axvline(0, color="black", linewidth=0.8)
-    eje.set_xlabel("aporte a tu probabilidad")
-    figura.tight_layout()
-    st.pyplot(figura)
+        enviado = st.form_submit_button("Calcular mi probabilidad", type="primary", width="stretch")
 
-    tabla = pd.DataFrame(
-        {
-            "Factor": aportes.index,
-            "Aporte": [f"{valor:+.1%}" for valor in aportes.to_numpy()],
-            "Efecto": [
-                "sube tu probabilidad" if valor >= 0 else "la baja" for valor in aportes.to_numpy()
-            ],
+    if enviado:
+        datos = {
+            "gre_score": gre,
+            "toefl_score": toefl,
+            "university_rating": float(rating),
+            "sop": sop,
+            "lor": lor,
+            "cgpa": cgpa,
+            "research": 1.0 if research == "Sí" else 0.0,
         }
-    )
-    st.dataframe(tabla, hide_index=True, use_container_width=True)
+        probabilidad = predecir(modelo, datos)
+        cesta = clasificar_cesta(probabilidad)
+        limite_inferior, limite_superior = intervalo_estimado(probabilidad)
 
-with st.expander("Cómo leer este resultado (y sus límites)"):
+        st.divider()
+        columna_numero, columna_cesta = st.columns([1, 2])
+        with columna_numero:
+            st.metric("Probabilidad estimada", f"{probabilidad:.0%}")
+            st.caption(f"Rango de referencia: {limite_inferior:.0%} a {limite_superior:.0%}")
+        with columna_cesta:
+            st.markdown(f"### {COLORES_CESTA[cesta]} Opción {cesta}")
+            st.write(DESCRIPCION_CESTA[cesta])
+
+        if probabilidad < UMBRAL_ADVERTENCIA:
+            st.warning(
+                "**Toma este número con precaución.** En perfiles como el tuyo el modelo tiende a ser "
+                f"optimista: casi no vio ejemplos por debajo de {PREDICCION_MINIMA:.0%} al entrenarse, y su "
+                "error se duplica en este tramo. Tu probabilidad real podría ser menor."
+            )
+
+        st.subheader("¿Por qué este resultado?")
+        st.caption(
+            f"El modelo parte de {valor_base:.0%}, que es la probabilidad media de todos los aspirantes, "
+            "y suma o resta según tu perfil."
+        )
+
+        aportes = contribuciones(modelo, datos)
+        aportes.index = [NOMBRES_LEGIBLES.get(nombre, nombre) for nombre in aportes.index]
+
+        figura, eje = plt.subplots(figsize=(7, 3.2))
+        colores = ["tab:green" if valor >= 0 else "tab:red" for valor in aportes.to_numpy()[::-1]]
+        eje.barh(aportes.index[::-1], aportes.to_numpy()[::-1], color=colores)
+        eje.axvline(0, color="black", linewidth=0.8)
+        eje.set_xlabel("aporte a tu probabilidad")
+        figura.tight_layout()
+        st.pyplot(figura)
+
+        tabla = pd.DataFrame(
+            {
+                "Factor": aportes.index,
+                "Aporte": [f"{valor:+.1%}" for valor in aportes.to_numpy()],
+                "Efecto": [
+                    "sube tu probabilidad" if valor >= 0 else "la baja"
+                    for valor in aportes.to_numpy()
+                ],
+            }
+        )
+        st.dataframe(tabla, hide_index=True, width="stretch")
+
+    with st.expander("Cómo leer este resultado (y sus límites)"):
+        st.markdown(
+            f"""
+    **Qué es este número.** Una estimación basada en {len(ETIQUETAS_CESTA) and 471} perfiles de
+    aspirantes reales. El modelo se equivoca en promedio **{MAE_MODELO:.1%}** en datos que nunca
+    vio, así que trátalo como una orientación, no como un veredicto.
+
+    **Para qué sirve de verdad.** Acierta la clasificación en segura / probable / ambiciosa el
+    **80 %** de las veces, y nunca confundió una opción ambiciosa con una segura al evaluarlo.
+    Es más fiable **ordenando** tus opciones que dando la cifra exacta.
+
+    **Sus límites, dichos claramente:**
+
+    - Los aspirantes de los datos tienen promedios altos (CGPA medio de 8.6/10). Si tu perfil
+      queda muy por debajo, el modelo tiene poco en qué basarse.
+    - No predice por debajo de **{PREDICCION_MINIMA:.0%}**: en el tramo bajo tiende a ser optimista.
+    - No conoce tu carta de intención real, ni el programa concreto, ni el año de postulación.
+      Dos aspirantes con datos idénticos pueden tener resultados distintos — y de hecho los
+      tienen: en los datos originales difieren cerca de un 5 % entre sí.
+
+    **No sustituye** el consejo de un asesor académico ni las estadísticas oficiales de cada
+    universidad.
+    """
+        )
+
+with pestana_lotes:
+    st.subheader("Varios aspirantes de una sola vez")
     st.markdown(
-        f"""
-**Qué es este número.** Una estimación basada en {len(ETIQUETAS_CESTA) and 471} perfiles de
-aspirantes reales. El modelo se equivoca en promedio **{MAE_MODELO:.1%}** en datos que nunca
-vio, así que trátalo como una orientación, no como un veredicto.
-
-**Para qué sirve de verdad.** Acierta la clasificación en segura / probable / ambiciosa el
-**80 %** de las veces, y nunca confundió una opción ambiciosa con una segura al evaluarlo.
-Es más fiable **ordenando** tus opciones que dando la cifra exacta.
-
-**Sus límites, dichos claramente:**
-
-- Los aspirantes de los datos tienen promedios altos (CGPA medio de 8.6/10). Si tu perfil
-  queda muy por debajo, el modelo tiene poco en qué basarse.
-- No predice por debajo de **{PREDICCION_MINIMA:.0%}**: en el tramo bajo tiende a ser optimista.
-- No conoce tu carta de intención real, ni el programa concreto, ni el año de postulación.
-  Dos aspirantes con datos idénticos pueden tener resultados distintos — y de hecho los
-  tienen: en los datos originales difieren cerca de un 5 % entre sí.
-
-**No sustituye** el consejo de un asesor académico ni las estadísticas oficiales de cada
-universidad.
-"""
+        "Sube un archivo con una fila por aspirante y obtén todas las predicciones juntas, "
+        "listas para descargar. Es la misma lógica de la pestaña anterior aplicada en lote: "
+        "**el mismo modelo y las mismas transformaciones**."
     )
+
+    with st.expander("Qué debe tener el archivo", expanded=True):
+        st.markdown(
+            f"""
+Un **CSV o parquet** con una fila por aspirante y estas columnas:
+
+{chr(10).join(f"- `{nombre}` — {dominio}" for nombre, dominio in COLUMNAS_ESPERADAS_LOTE)}
+
+Detalles que suelen ahorrar un intento fallido:
+
+- Los nombres valen tal cual salen del dataset original (`GRE Score`, `LOR `) o en
+  minúsculas con guion bajo (`gre_score`, `lor`).
+- **Puedes dejar celdas vacías** o escribir `n/a`: el modelo imputa el dato que falte, igual
+  que cuando marcas «No lo sé» en la otra pestaña. Cada fila necesita al menos 4 de los 7
+  datos.
+- Las **columnas de más se conservan**: si incluyes un `id` o el nombre del aspirante,
+  volverán en el archivo de resultados para que sepas de quién es cada predicción.
+- Límite de la demo: {MAX_FILAS_LOTE} filas. Para lotes mayores está el script
+  `inference_pipeline.py` del repositorio.
+"""
+        )
+
+    st.download_button(
+        "⬇️ Descargar archivo de ejemplo",
+        data=ejemplo_de_entrada(),
+        file_name=ARCHIVO_EJEMPLO_ENTRADA.name,
+        mime="text/csv",
+        help="Ocho aspirantes de ejemplo, dos de ellos con datos incompletos.",
+    )
+
+    archivo = st.file_uploader("Sube tu archivo", type=["csv", "parquet"])
+
+    if archivo is not None:
+        try:
+            datos_lote = leer_tabla_subida(archivo, archivo.name)
+            predicciones = procesar_lote(modelo, datos_lote)
+        except (ErrorValidacion, ValueError, FileNotFoundError) as error:
+            st.error(f"**No se pudo procesar el archivo.**\n\n```\n{error}\n```")
+            st.caption(
+                "El archivo se rechaza entero a propósito: es preferible corregir el dato a "
+                "publicar una predicción que nadie debería usar."
+            )
+        else:
+            resumen = resumen_del_lote(predicciones)
+            columna_total, columna_media, columna_aviso = st.columns(3)
+            columna_total.metric("Aspirantes procesados", len(predicciones))
+            columna_media.metric("Probabilidad media", f"{predicciones['prediccion'].mean():.0%}")
+            columna_aviso.metric("Con advertencia", int(predicciones["advertencia"].sum()))
+
+            st.markdown("**Cómo se reparten las opciones**")
+            st.bar_chart(resumen.set_index("cesta")["n"], height=200)
+
+            st.markdown("**Resultados**")
+            st.dataframe(
+                predicciones,
+                hide_index=True,
+                width="stretch",
+                column_order=[
+                    *[
+                        c
+                        for c in predicciones.columns
+                        if c not in columnas_de_prediccion(predicciones)
+                    ],
+                    *columnas_de_prediccion(predicciones),
+                ],
+            )
+
+            st.download_button(
+                "⬇️ Descargar predicciones (CSV)",
+                data=a_csv(predicciones),
+                file_name="predicciones.csv",
+                mime="text/csv",
+                type="primary",
+            )
+
+            if predicciones["advertencia"].any():
+                st.warning(
+                    f"**{int(predicciones['advertencia'].sum())} de {len(predicciones)} "
+                    "predicciones caen en el tramo bajo**, donde el modelo tiende a ser "
+                    "optimista. La columna `advertencia` las marca una a una."
+                )
 
 st.caption(
     "Modelo: Extra Trees sobre 471 perfiles · MAE 0.0476 · "
