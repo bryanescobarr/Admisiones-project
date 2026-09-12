@@ -98,7 +98,7 @@ def raiz_proyecto() -> Path:
 
 def ruta_modelo_por_defecto() -> Path:
     """Ruta del artefacto de servicio, resuelta desde la raíz del repositorio."""
-    return raiz_proyecto() / "data" / "06_models" / MODELO_SERVIDO
+    return raiz_proyecto() / "models" / MODELO_SERVIDO
 
 
 def ruta_metricas_por_defecto() -> Path:
@@ -137,13 +137,13 @@ UMBRAL_ADVERTENCIA = 0.55
 
 
 def cargar_modelo(ruta: Path | None = None) -> Pipeline:
-    """Carga el pipeline de preprocesamiento + modelo entrenado en `06-models`."""
+    """Carga el pipeline de preprocesamiento + modelo de servicio de `models/`."""
     destino = ruta or ruta_modelo_por_defecto()
     if not destino.exists():
         raise FileNotFoundError(
             f"No se encontro el modelo en {destino}. Generalo con el training pipeline: "
             "uv run python src/pipelines/training_pipeline/train_pipeline.py "
-            f"--modelo-salida data/06_models/{MODELO_SERVIDO}"
+            f"--modelo-salida models/{MODELO_SERVIDO}"
         )
     return joblib.load(destino)
 

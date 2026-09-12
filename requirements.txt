@@ -1,7 +1,7 @@
 # Dependencias de la demo de Streamlit.
 #
 # Las versiones estan fijadas a proposito: son **las mismas que serializaron**
-# data/06_models/modelo_produccion.joblib, y un desajuste de scikit-learn, numpy o joblib
+# models/modelo_produccion.joblib, y un desajuste de scikit-learn, numpy o joblib
 # puede impedir deserializarlo en Streamlit Cloud. Si se regenera el artefacto con otro
 # entorno, hay que actualizar estas lineas en el mismo commit.
 #

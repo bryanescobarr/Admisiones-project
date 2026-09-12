@@ -129,7 +129,8 @@ def test_la_demo_sirve_el_artefacto_del_training_pipeline() -> None:
     ruta = ruta_modelo_por_defecto()
 
     assert ruta.name == MODELO_SERVIDO == "modelo_produccion.joblib"
-    assert ruta.parent.name == "06_models"
+    assert ruta.parent.name == "models"
+    assert "data" not in ruta.parts, "el artefacto de servicio ya no vive bajo data/"
     assert ruta.exists(), "el artefacto de servicio tiene que estar versionado"
 
 

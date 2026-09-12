@@ -30,7 +30,7 @@ Lo mismo desde la línea de comandos, con el script que hay detrás de la pesta�
 
 ```bash
 uv run python src/pipelines/inference_pipeline/inference_pipeline.py \
-    --modelo data/06_models/modelo_produccion.joblib \
+    --modelo models/modelo_produccion.joblib \
     --datos examples/aspirantes_ejemplo.csv \
     --salida examples/predicciones_ejemplo.csv --mostrar 10
 ```
